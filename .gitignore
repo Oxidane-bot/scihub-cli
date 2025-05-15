@@ -1,0 +1,44 @@
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 构建和发布文件
+build/
+dist/
+*.egg-info/
+*.egg
+*.so
+
+# 项目特定目录
+downloads/
+logs/
+memory-bank/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE和编辑器文件
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 本地配置和环境
+.env
+.venv
+env/
+venv/
+ENV/
+.python-version
+
+# 其他项目特定文件
+test_papers.txt
+sci-hub-page.html
+.pytest_cache/
+*.log
+prd.md
+
+# 不要忽略clean.py脚本
+!clean.py 

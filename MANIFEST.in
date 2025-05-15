@@ -1,0 +1,6 @@
+include README.md
+include LICENSE
+include requirements.txt
+include INSTALL.md
+recursive-include scihub_cli *
+prune tests/ 

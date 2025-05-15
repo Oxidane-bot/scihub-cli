@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scihub-cli"
+version = "0.1.0"
+description = "Command-line tool for batch downloading academic papers from Sci-Hub"
+authors = [
+    {name = "Sci-Hub CLI", email = "example@example.com"},
+]
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "requests>=2.25.1",
+    "beautifulsoup4>=4.9.3",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+scihub-cli = "scihub_cli.scihub_dl:main"
+
+[tool.setuptools]
+packages = ["scihub_cli"]
+
+[tool.setuptools.package-data]
+scihub_cli = ["py.typed"] 
