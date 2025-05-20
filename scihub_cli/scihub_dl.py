@@ -15,6 +15,7 @@ from urllib.parse import urlparse, quote, unquote, urljoin
 from bs4 import BeautifulSoup
 import time
 from pathlib import Path
+from scihub_cli.metadata_utils import extract_metadata, generate_filename_from_metadata
 
 # Default settings
 DEFAULT_OUTPUT_DIR = './downloads'
@@ -33,12 +34,23 @@ log_dir = os.path.join(user_home, '.scihub-cli', 'logs')
 os.makedirs(log_dir, exist_ok=True)
 
 # Set up logging
+# Attempt to reconfigure console for UTF-8 output on Windows
+if sys.platform == "win32":
+    try:
+        if sys.stdout.isatty() and sys.stdout.encoding.lower() != 'utf-8':
+            sys.stdout.reconfigure(encoding='utf-8')
+        if sys.stderr.isatty() and sys.stderr.encoding.lower() != 'utf-8':
+            sys.stderr.reconfigure(encoding='utf-8')
+    except Exception as e:
+        # Use print for this warning as logger might not be fully configured or could also cause issues
+        print(f"Warning: Could not reconfigure console to UTF-8: {e}", file=sys.stderr)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(log_dir, 'scihub-dl.log')),
-        logging.StreamHandler(sys.stdout)
+        logging.FileHandler(os.path.join(log_dir, 'scihub-dl.log'), encoding='utf-8'), # Explicitly use UTF-8 for file
+        logging.StreamHandler(sys.stdout) # sys.stdout should now be UTF-8 if reconfigure worked
     ]
 )
 logger = logging.getLogger(__name__)
@@ -219,15 +231,27 @@ class SciHubDownloader:
         # Default filename based on DOI
         filename = self._clean_filename(doi.replace('/', '_'))
         
-        # If we have HTML, try to extract paper metadata
+        # If we have HTML, try to extract metadata using the new metadata utilities
         if html_content:
-            soup = BeautifulSoup(html_content, 'html.parser')
+            # Try to extract metadata (title and year)
+            metadata = extract_metadata(html_content)
             
-            # Try to get title
-            title_elem = soup.find('title')
-            if title_elem and title_elem.text and 'sci-hub' not in title_elem.text.lower():
-                title = title_elem.text.strip()
-                filename = self._clean_filename(title[:50])
+            if metadata and 'title' in metadata and 'year' in metadata:
+                # Generate filename from metadata
+                return generate_filename_from_metadata(
+                    metadata['title'],
+                    metadata['year'],
+                    doi
+                )
+            else:
+                # Fallback to the original method if metadata extraction failed
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # Try to get title
+                title_elem = soup.find('title')
+                if title_elem and title_elem.text and 'sci-hub' not in title_elem.text.lower():
+                    title = title_elem.text.strip()
+                    filename = self._clean_filename(title[:50])
                 
         return f"{filename}.pdf"
     
@@ -282,7 +306,9 @@ class SciHubDownloader:
                 logger.debug(f"Download URL: {download_url}")
                 
                 # Generate filename
-                filename = self._generate_filename(doi, response.text)
+                # If we're using fallback_response, use its content for metadata extraction
+                html_content = fallback_response.text if 'fallback_response' in locals() else response.text
+                filename = self._generate_filename(doi, html_content)
                 output_path = os.path.join(self.output_dir, filename)
                 
                 # Download the PDF

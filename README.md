@@ -12,6 +12,7 @@ A command-line tool for batch downloading academic papers from Sci-Hub.
 - Customizable output directory
 - Proper error handling and retries
 - Progress reporting
+- **Metadata-based Filenames:** Attempts to name downloaded PDF files using the article's metadata (e.g., `[YYYY] - [Sanitized Title].pdf`). This makes files more descriptive and easier to organize. If metadata cannot be extracted, it falls back to the previous naming scheme (based on DOI or input identifier).
 
 ## Installation
 
