@@ -41,4 +41,8 @@ sci-hub-page.html
 prd.md
 
 # 不要忽略clean.py脚本
-!clean.py 
+!clean.py
+
+# Claude相关文件
+CLAUDE.md
+.claude/ 
