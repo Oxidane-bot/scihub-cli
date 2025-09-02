@@ -1,0 +1,748 @@
+#!/usr/bin/env python3
+"""
+Sci-Hub Batch Downloader - Smart Tiered Mirror Strategy
+
+A command-line tool to batch download academic papers from Sci-Hub.
+Uses intelligent mirror selection: easy mirrors first, complex bypass only when needed.
+"""
+
+import argparse
+import os
+import re
+import sys
+import logging
+import time
+from pathlib import Path
+from urllib.parse import urlparse, quote, unquote, urljoin
+from bs4 import BeautifulSoup
+from typing import Optional, Dict, Any
+
+# Import cloudscraper for Cloudflare bypass
+try:
+    import cloudscraper
+except ImportError:
+    print("cloudscraper is required. Install with: pip install cloudscraper")
+    sys.exit(1)
+
+try:
+    from fake_useragent import UserAgent
+except ImportError:
+    print("fake-useragent is required. Install with: pip install fake-useragent")
+    sys.exit(1)
+
+from scihub_cli.metadata_utils import extract_metadata, generate_filename_from_metadata
+from scihub_cli.stealth_utils import ProxyRotator
+
+# Default settings
+DEFAULT_OUTPUT_DIR = './downloads'
+DEFAULT_TIMEOUT = 60
+DEFAULT_RETRIES = 3
+DEFAULT_PARALLEL = 3
+
+# Mirror configuration by difficulty level (科学分层策略)
+MIRROR_TIERS = {
+    'easy': [  # No Cloudflare protection, use basic requests
+        'https://www.sci-hub.ee',
+        'https://sci-hub.ru', 
+        'https://sci-hub.ren',
+        'https://sci-hub.wf',
+    ],
+    'medium': [  # Light protection, may need user-agent rotation
+        'https://sci-hub.st',
+        'https://sci-hub.mksa.top',
+    ],
+    'hard': [  # Strong Cloudflare protection, needs advanced bypass
+        'https://sci-hub.se',  # The final boss
+    ]
+}
+
+# Flatten for backward compatibility
+DEFAULT_MIRRORS = MIRROR_TIERS['easy'] + MIRROR_TIERS['medium'] + MIRROR_TIERS['hard']
+
+# Bypass strategies by complexity
+BYPASS_STRATEGIES = {
+    'basic': 'Basic requests with realistic headers (fastest)',
+    'cloudscraper': 'Cloudscraper for Cloudflare bypass (recommended for hard mirrors)',
+    'requests_html': 'JavaScript rendering for complex challenges (slowest)'
+}
+
+# Use user's home directory for logs
+user_home = str(Path.home())
+log_dir = os.path.join(user_home, '.scihub-cli', 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
+# Set up logging
+if sys.platform == "win32":
+    try:
+        if sys.stdout.isatty() and sys.stdout.encoding.lower() != 'utf-8':
+            sys.stdout.reconfigure(encoding='utf-8')
+        if sys.stderr.isatty() and sys.stderr.encoding.lower() != 'utf-8':
+            sys.stderr.reconfigure(encoding='utf-8')
+    except Exception as e:
+        print(f"Warning: Could not reconfigure console to UTF-8: {e}", file=sys.stderr)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, 'scihub-dl.log'), encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class CloudflareBypassManager:
+    """Manages multiple Cloudflare bypass strategies"""
+    
+    def __init__(self, user_agent_rotator=None):
+        self.ua = user_agent_rotator or UserAgent(browsers=['chrome', 'firefox', 'safari'])
+        self.scrapers = {}
+        
+    def create_cloudscraper_session(self, **kwargs) -> cloudscraper.CloudScraper:
+        """Create a cloudscraper session optimized for sci-hub.se"""
+        scraper = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'windows',
+                'desktop': True
+            },
+            debug=False,
+            **kwargs
+        )
+        
+        # Add realistic headers
+        scraper.headers.update({
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'User-Agent': self.ua.random
+        })
+        
+        return scraper
+        
+    def create_requests_html_session(self):
+        """Create requests-html session as fallback"""
+        try:
+            from requests_html import HTMLSession
+            session = HTMLSession()
+            session.headers.update({
+                'User-Agent': self.ua.random,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+            })
+            return session
+        except ImportError:
+            logger.warning("requests-html not available, skipping this bypass method")
+            return None
+    
+    def detect_cloudflare_challenge(self, html_content: str, status_code: int = 200) -> bool:
+        """Detect if response contains Cloudflare challenge"""
+        if status_code == 403:
+            return True
+            
+        if not html_content:
+            return False
+            
+        cloudflare_indicators = [
+            'cf-browser-verification',
+            'cf-challenge-page', 
+            'Checking your browser',
+            'DDoS protection by Cloudflare',
+            'Just a moment',
+            'Ray ID:',
+            'cloudflare',
+            'Access denied',
+            'Error 1020',
+            'turnstile'
+        ]
+        
+        return any(indicator.lower() in html_content.lower() for indicator in cloudflare_indicators)
+
+class SciHubDownloader:
+    """Smart downloader with tiered mirror and bypass strategy"""
+    
+    def __init__(self, output_dir=DEFAULT_OUTPUT_DIR, mirror=None, 
+                 timeout=DEFAULT_TIMEOUT, retries=DEFAULT_RETRIES, 
+                 bypass_strategy='auto', proxy_list=None):
+        """Initialize with intelligent mirror selection."""
+        self.output_dir = output_dir
+        self.timeout = timeout
+        self.retries = retries
+        self.bypass_strategy = bypass_strategy
+        
+        # Mirror selection logic
+        if mirror:
+            self.mirrors = [mirror]
+            self.use_tiered_approach = False
+        else:
+            self.mirrors = DEFAULT_MIRRORS
+            self.use_tiered_approach = True
+            
+        # Initialize bypass manager and sessions
+        self.bypass_manager = CloudflareBypassManager()
+        self.sessions = {}  # Cache sessions by strategy
+        
+        # Initialize proxy rotator
+        self.proxy_rotator = ProxyRotator(proxy_list) if proxy_list else None
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        
+        logger.info(f"Initialized with strategy: {bypass_strategy}")
+        if self.use_tiered_approach:
+            logger.info("Using tiered mirror approach: easy → medium → hard")
+    
+    def _get_session_for_strategy(self, strategy: str):
+        """Get or create session for specific bypass strategy"""
+        if strategy not in self.sessions:
+            if strategy == 'cloudscraper':
+                self.sessions[strategy] = self.bypass_manager.create_cloudscraper_session()
+            elif strategy == 'requests_html':
+                self.sessions[strategy] = self.bypass_manager.create_requests_html_session()
+            else:  # basic
+                import requests
+                session = requests.Session()
+                session.headers.update({
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+                })
+                self.sessions[strategy] = session
+        return self.sessions[strategy]
+    
+    def _try_mirror_with_strategy(self, mirror: str, strategy: str) -> Optional[str]:
+        """Try a specific mirror with a specific bypass strategy"""
+        session = self._get_session_for_strategy(strategy)
+        proxies = self.proxy_rotator.get_next_proxy() if self.proxy_rotator else {}
+        
+        try:
+            kwargs = {'timeout': self.timeout}
+            if proxies:
+                kwargs['proxies'] = proxies
+            
+            response = session.get(mirror, **kwargs)
+            
+            if response.status_code == 200:
+                # Check for Cloudflare challenge
+                if self.bypass_manager.detect_cloudflare_challenge(response.text):
+                    if strategy == 'basic':  # Basic strategy can't handle challenges
+                        return None
+                    logger.warning(f"Cloudflare detected on {mirror} with {strategy}")
+                    # For cloudscraper, it should handle automatically
+                
+                logger.info(f"✅ {mirror} works with {strategy} strategy")
+                return mirror
+            elif response.status_code == 403:
+                logger.debug(f"❌ {mirror} blocked (403) with {strategy}")
+                return None
+            else:
+                logger.debug(f"❌ {mirror} returned {response.status_code} with {strategy}")
+                return None
+                
+        except Exception as e:
+            logger.debug(f"❌ {mirror} failed with {strategy}: {e}")
+            return None
+    
+    def _get_working_mirror(self):
+        """Intelligent mirror selection with tiered bypass approach"""
+        
+        if not self.use_tiered_approach:
+            # User specified a mirror, try all strategies on it
+            mirror = self.mirrors[0]
+            logger.info(f"Testing user-specified mirror: {mirror}")
+            
+            strategies = ['basic', 'cloudscraper', 'requests_html']
+            if self.bypass_strategy != 'auto':
+                strategies = [self.bypass_strategy]
+                
+            for strategy in strategies:
+                result = self._try_mirror_with_strategy(mirror, strategy)
+                if result:
+                    self.current_strategy = strategy
+                    self.current_session = self._get_session_for_strategy(strategy)
+                    return result
+            
+            raise Exception(f"Mirror {mirror} is unavailable with all strategies")
+        
+        # Tiered approach: try easy mirrors first, then harder ones
+        logger.info("🔍 Starting intelligent mirror selection...")
+        
+        # Tier 1: Easy mirrors with basic requests (fastest)
+        logger.info("🚀 Tier 1: Testing easy mirrors with basic requests...")
+        for mirror in MIRROR_TIERS['easy']:
+            result = self._try_mirror_with_strategy(mirror, 'basic')
+            if result:
+                self.current_strategy = 'basic'
+                self.current_session = self._get_session_for_strategy('basic')
+                logger.info(f"✨ Success! Using {mirror} with basic strategy (fastest)")
+                return result
+        
+        # Tier 2: Medium mirrors with cloudscraper
+        logger.info("🔧 Tier 2: Testing medium mirrors with cloudscraper...")
+        for mirror in MIRROR_TIERS['medium']:
+            result = self._try_mirror_with_strategy(mirror, 'cloudscraper')
+            if result:
+                self.current_strategy = 'cloudscraper'
+                self.current_session = self._get_session_for_strategy('cloudscraper')
+                logger.info(f"✨ Success! Using {mirror} with cloudscraper strategy")
+                return result
+        
+        # Tier 3: Hard mirrors (sci-hub.se) with advanced bypass
+        logger.info("⚔️ Tier 3: Attempting hard mirrors (sci-hub.se) with advanced bypass...")
+        for mirror in MIRROR_TIERS['hard']:
+            # Try cloudscraper first
+            result = self._try_mirror_with_strategy(mirror, 'cloudscraper')
+            if result:
+                self.current_strategy = 'cloudscraper'
+                self.current_session = self._get_session_for_strategy('cloudscraper')
+                logger.info(f"🏆 Success! Conquered {mirror} with cloudscraper!")
+                return result
+            
+            # If cloudscraper fails, try requests_html as last resort
+            logger.info(f"Trying {mirror} with requests_html (last resort)...")
+            result = self._try_mirror_with_strategy(mirror, 'requests_html')
+            if result:
+                self.current_strategy = 'requests_html'
+                self.current_session = self._get_session_for_strategy('requests_html')
+                logger.info(f"🏆 Success! Conquered {mirror} with requests_html!")
+                return result
+        
+        raise Exception("😭 All mirrors and strategies exhausted")
+    
+    def _make_request_with_retry(self, url: str, max_attempts: int = 3) -> Optional[Any]:
+        """Make request with automatic retry and bypass handling"""
+        proxies = self.proxy_rotator.get_next_proxy() if self.proxy_rotator else {}
+        
+        for attempt in range(max_attempts):
+            try:
+                kwargs = {'timeout': self.timeout}
+                if proxies:
+                    kwargs['proxies'] = proxies
+                
+                response = self.current_session.get(url, **kwargs)
+                
+                if response.status_code == 200:
+                    # Check if we still got a challenge page
+                    if self.bypass_manager.detect_cloudflare_challenge(response.text):
+                        logger.warning(f"Still got Cloudflare challenge on attempt {attempt + 1}")
+                        if attempt < max_attempts - 1:
+                            time.sleep(2 ** attempt)  # Exponential backoff
+                            continue
+                    return response
+                    
+                elif response.status_code == 403 and attempt < max_attempts - 1:
+                    logger.warning(f"403 error on attempt {attempt + 1}, retrying...")
+                    time.sleep(2 ** attempt)
+                    continue
+                    
+                else:
+                    logger.warning(f"Request failed with status {response.status_code}")
+                    return response
+                    
+            except Exception as e:
+                logger.warning(f"Request attempt {attempt + 1} failed: {e}")
+                if attempt < max_attempts - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                    
+        return None
+    
+    def _normalize_doi(self, identifier):
+        """Convert URL or DOI to a normalized DOI format."""
+        # If it's already a DOI
+        doi_pattern = r'b10.d{4,}(?:.d+)*/(?:(?!["        doi_pattern = r'\\b10\\.\\d{4,}(?:\\.\\d+)*\\/(?:(?![\"&\\'<>])\\S)+\\b''<>])S)+b'
+        if re.match(doi_pattern, identifier):
+            return identifier
+        
+        # If it's a URL, try to extract DOI
+        parsed = urlparse(identifier)
+        if parsed.netloc:
+            path = parsed.path
+            # Extract DOI from common URL patterns
+            if 'doi.org' in parsed.netloc:
+                return path.strip('/')
+            
+            # Try to find DOI in the URL path
+            doi_match = re.search(doi_pattern, identifier)
+            if doi_match:
+                return doi_match.group(0)
+        
+        # Return as is if we can't normalize
+        return identifier
+    
+    def _format_doi_for_url(self, doi):
+        """Format DOI for use in Sci-Hub URL."""
+        # Replace / with @ for Sci-Hub URL format
+        formatted = doi.replace('/', '@')
+        # Handle parentheses and other special characters
+        formatted = quote(formatted, safe='@')
+        return formatted
+    
+    def _clean_url(self, url):
+        """Clean the URL by removing fragments and adding download parameter."""
+        # Remove the fragment (anything after #)
+        if '#' in url:
+            url = url.split('#')[0]
+        
+        # Add the download parameter if not already present
+        if "download=true" not in url:
+            url += ("&" if "?" in url else "?") + "download=true"
+            
+        return url
+    
+    def _fix_url_format(self, url, mirror):
+        """Fix common URL formatting issues."""
+        # Handle relative URLs (starting with /)
+        if url.startswith('/'):
+            # Extract domain from mirror
+            parsed_mirror = urlparse(mirror)
+            base_url = f"{parsed_mirror.scheme}://{parsed_mirror.netloc}"
+            return urljoin(base_url, url)
+        
+        # Handle relative URLs without leading slash
+        if not url.startswith('http') and '://' not in url:
+            return urljoin(mirror, url)
+        
+        # Handle incorrectly formatted domain (sci-hub.sedownloads)
+        parsed = urlparse(url)
+        if 'downloads' in parsed.netloc:
+            domain = parsed.netloc.split('downloads')[0]
+            path = f"/downloads{parsed.netloc.split('downloads')[1]}{parsed.path}"
+            query = f"?{parsed.query}" if parsed.query else ""
+            return f"https://{domain}{path}{query}"
+        
+        return url
+    
+    def _extract_download_url(self, html_content, mirror):
+        """Extract the PDF download URL from Sci-Hub HTML."""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Look for the download button (onclick attribute)
+        button_pattern = r"location\\.href=['\"]([^'\"]+)['\"]"
+        buttons = soup.find_all('button', onclick=re.compile(button_pattern))
+        for button in buttons:
+            onclick = button.get('onclick', '')
+            match = re.search(button_pattern, onclick)
+            if match:
+                href = match.group(1)
+                href = self._fix_url_format(href, mirror)
+                logger.debug(f"Found download button (onclick): {href}")
+                return self._clean_url(href)
+        
+        # Look for the download button or iframe
+        iframe = soup.find('iframe', id='pdf')
+        if iframe and iframe.get('src'):
+            src = iframe.get('src')
+            # Handle URL formatting
+            src = self._fix_url_format(src, mirror)
+            logger.debug(f"Found download iframe: {src}")
+            return self._clean_url(src)
+            
+        # Look for download button
+        download_button = soup.find('a', string=re.compile(r'download', re.I))
+        if download_button and download_button.get('href'):
+            href = download_button.get('href')
+            href = self._fix_url_format(href, mirror)
+            logger.debug(f"Found download button: {href}")
+            return self._clean_url(href)
+            
+        # Look for embed tags
+        embed = soup.find('embed', attrs={'type': 'application/pdf'})
+        if embed and embed.get('src'):
+            src = embed.get('src')
+            src = self._fix_url_format(src, mirror)
+            logger.debug(f"Found embedded PDF: {src}")
+            return self._clean_url(src)
+        
+        # Search directly in the HTML content for download patterns
+        # Look for specific download links in JavaScript or HTML
+        patterns = [
+            r"location\\.href=['\"]([^'\"]+)['\"]",
+            r'href=[\"\\'](/downloads/[^\"\\'>]+)[\"\\']',
+            r'src=[\"\\'](/downloads/[^\"\\'>]+\\.pdf)[\"\\']',
+            r'/downloads/[^\"\\\'<>\\s]+\\.pdf'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, html_content)
+            if matches:
+                download_link = matches[0]
+                # Clean up the link
+                if isinstance(download_link, tuple):
+                    download_link = download_link[0]
+                download_link = download_link.split('#')[0] if '#' in download_link else download_link
+                full_url = self._fix_url_format(download_link, mirror)
+                logger.debug(f"Found download link with pattern {pattern}: {full_url}")
+                return self._clean_url(full_url)
+        
+        logger.warning("Could not find download URL in HTML")
+        return None
+    
+    def _clean_filename(self, filename):
+        """Create a safe filename from potentially unsafe string."""
+        # Replace unsafe characters
+        unsafe_chars = r'[<>:\"/\\\\|?*]'
+        filename = re.sub(unsafe_chars, '_', filename)
+        # Limit length
+        if len(filename) > 100:
+            filename = filename[:100]
+        return filename
+    
+    def _generate_filename(self, doi, html_content=None):
+        """Generate a filename based on DOI and optionally paper metadata."""
+        # Default filename based on DOI
+        filename = self._clean_filename(doi.replace('/', '_'))
+        
+        # If we have HTML, try to extract metadata using the new metadata utilities
+        if html_content:
+            # Try to extract metadata (title and year)
+            metadata = extract_metadata(html_content)
+            
+            if metadata and 'title' in metadata and 'year' in metadata:
+                # Generate filename from metadata
+                return generate_filename_from_metadata(
+                    metadata['title'],
+                    metadata['year'],
+                    doi
+                )
+            else:
+                # Fallback to the original method if metadata extraction failed
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # Try to get title
+                title_elem = soup.find('title')
+                if title_elem and title_elem.text and 'sci-hub' not in title_elem.text.lower():
+                    title = title_elem.text.strip()
+                    filename = self._clean_filename(title[:50])
+                
+        return f"{filename}.pdf"
+    
+    def download_paper(self, identifier):
+        """Download a paper with enhanced Cloudflare bypass."""
+        doi = self._normalize_doi(identifier)
+        logger.info(f"Downloading paper: {doi}")
+        
+        for attempt in range(self.retries):
+            try:
+                # Get working mirror - catch exception if all mirrors fail
+                try:
+                    mirror = self._get_working_mirror()
+                except Exception as e:
+                    logger.error(f"All mirrors unavailable: {e}")
+                    if attempt < self.retries - 1:
+                        logger.info(f"Retrying in 30s... (Attempt {attempt+1}/{self.retries})")
+                        time.sleep(30)
+                        continue
+                    else:
+                        break
+                
+                # Format DOI for Sci-Hub URL
+                formatted_doi = self._format_doi_for_url(doi) if doi.startswith('10.') else doi
+                scihub_url = f"{mirror}/{formatted_doi}"
+                
+                logger.debug(f"Accessing: {scihub_url}")
+                
+                # Get the Sci-Hub page with retry logic
+                response = self._make_request_with_retry(scihub_url)
+                if not response or response.status_code != 200:
+                    logger.warning(f"Failed to access Sci-Hub page: {response.status_code if response else 'No response'}")
+                    continue
+                
+                # Extract download URL
+                download_url = self._extract_download_url(response.text, mirror)
+                if not download_url:
+                    logger.warning(f"Could not extract download URL for {doi}")
+                    # Try fallback with unformatted DOI
+                    if doi.startswith('10.'):
+                        fallback_url = f"{mirror}/{doi}"
+                        logger.debug(f"Trying fallback: {fallback_url}")
+                        fallback_response = self._make_request_with_retry(fallback_url)
+                        if fallback_response and fallback_response.status_code == 200:
+                            download_url = self._extract_download_url(fallback_response.text, mirror)
+                            response = fallback_response  # Use for metadata
+                    
+                    if not download_url:
+                        continue
+                
+                # Generate filename with metadata
+                filename = self._generate_filename(doi, response.text)
+                output_path = os.path.join(self.output_dir, filename)
+                
+                # Download PDF
+                logger.info(f"Downloading to {output_path}")
+                pdf_response = self._make_request_with_retry(download_url)
+                
+                if pdf_response and pdf_response.status_code == 200:
+                    # Validate content
+                    content_type = pdf_response.headers.get('Content-Type', '')
+                    if 'pdf' not in content_type.lower() and 'octet-stream' not in content_type.lower():
+                        logger.warning(f"Unexpected content type: {content_type}")
+                    
+                    # Save file
+                    with open(output_path, 'wb') as f:
+                        for chunk in pdf_response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    
+                    # Verify file size
+                    file_size = os.path.getsize(output_path)
+                    if file_size < 10000:  # Less than 10KB is suspicious
+                        logger.warning(f"File suspiciously small: {file_size} bytes")
+                        os.remove(output_path)
+                        if attempt < self.retries - 1:
+                            continue
+                    
+                    logger.info(f"Successfully downloaded {doi} ({file_size} bytes)")
+                    return output_path
+                    
+            except Exception as e:
+                logger.error(f"Error downloading {doi}: {e}")
+            
+            # Wait before retry
+            wait_time = min(2 ** attempt, 30)  # Exponential backoff, max 30s
+            logger.info(f"Retrying in {wait_time}s... (Attempt {attempt+1}/{self.retries})")
+            time.sleep(wait_time)
+        
+        logger.error(f"Failed to download {doi} after {self.retries} attempts")
+        return None
+    
+    def download_from_file(self, input_file, parallel=DEFAULT_PARALLEL):
+        """Download papers from a file containing DOIs or URLs."""
+        # Read input file
+        try:
+            with open(input_file, 'r') as f:
+                lines = f.readlines()
+        except Exception as e:
+            logger.error(f"Error reading input file: {e}")
+            return []
+        
+        # Filter out comments and empty lines
+        identifiers = [line.strip() for line in lines 
+                      if line.strip() and not line.strip().startswith('#')]
+        
+        logger.info(f"Found {len(identifiers)} papers to download")
+        
+        # Download each paper
+        results = []
+        for i, identifier in enumerate(identifiers):
+            logger.info(f"Processing {i+1}/{len(identifiers)}: {identifier}")
+            result = self.download_paper(identifier)
+            results.append((identifier, result))
+            
+            # Add a small delay between downloads
+            if i < len(identifiers) - 1:
+                time.sleep(2)
+        
+        # Print summary
+        successful = sum(1 for _, result in results if result)
+        logger.info(f"Downloaded {successful}/{len(identifiers)} papers")
+        
+        return results
+    
+    def __del__(self):
+        """Clean up resources"""
+        for session in self.sessions.values():
+            try:
+                session.close()
+            except:
+                pass
+
+
+def main():
+    """Main entry point with intelligent tiered strategy."""
+    parser = argparse.ArgumentParser(
+        description='Sci-Hub CLI - Smart tiered mirror selection strategy',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Bypass strategies:
+  auto           - Automatic: easy mirrors first, complex bypass only when needed (recommended)
+  basic          - Basic requests with realistic headers (fastest)
+  cloudscraper   - Cloudscraper for Cloudflare bypass (for hard mirrors)
+  requests_html  - JavaScript rendering for complex challenges (slowest)
+
+Tiered Strategy:
+  Tier 1: Easy mirrors (sci-hub.ee, .ru, .ren, .wf) with basic requests
+  Tier 2: Medium mirrors (sci-hub.st) with cloudscraper  
+  Tier 3: Hard mirrors (sci-hub.se) with advanced bypass
+
+Examples:
+  scihub-cli papers.txt                    # Auto strategy (recommended)
+  scihub-cli papers.txt -m https://sci-hub.se --bypass cloudscraper
+  scihub-cli papers.txt -o downloads -v -r 5
+        """
+    )
+    
+    parser.add_argument('input_file', help='Text file containing DOIs or URLs (one per line)')
+    parser.add_argument('-o', '--output', default=DEFAULT_OUTPUT_DIR,
+                        help=f'Output directory (default: {DEFAULT_OUTPUT_DIR})')
+    parser.add_argument('-m', '--mirror', help='Specific Sci-Hub mirror to use')
+    parser.add_argument('-t', '--timeout', type=int, default=DEFAULT_TIMEOUT,
+                        help=f'Request timeout in seconds (default: {DEFAULT_TIMEOUT})')
+    parser.add_argument('-r', '--retries', type=int, default=DEFAULT_RETRIES,
+                        help=f'Number of retries (default: {DEFAULT_RETRIES})')
+    parser.add_argument('--bypass', choices=['auto'] + list(BYPASS_STRATEGIES.keys()), default='auto',
+                        help='Bypass strategy (default: auto)')
+    parser.add_argument('--proxy-file', help='File with proxy list (one per line: http://host:port)')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose logging')
+    parser.add_argument('--version', action='version', version='Sci-Hub CLI 0.4.0 - Smart Tiered Strategy')
+    
+    args = parser.parse_args()
+    
+    # Set logging level
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Load proxy list if provided
+    proxy_list = None
+    if args.proxy_file:
+        try:
+            with open(args.proxy_file, 'r') as f:
+                proxy_list = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+            logger.info(f"Loaded {len(proxy_list)} proxies from {args.proxy_file}")
+        except Exception as e:
+            logger.error(f"Failed to load proxy file: {e}")
+            return 1
+    
+    # Initialize downloader
+    logger.info(f"🚀 Sci-Hub CLI v0.4.0 - Smart Tiered Strategy")
+    if args.bypass == 'auto':
+        logger.info("🧠 Auto strategy: Will try easy mirrors first, complex bypass only when needed")
+    else:
+        logger.info(f"🔧 Using bypass strategy: {args.bypass}")
+    
+    downloader = SciHubDownloader(
+        output_dir=args.output,
+        mirror=args.mirror,
+        timeout=args.timeout,
+        retries=args.retries,
+        bypass_strategy=args.bypass,
+        proxy_list=proxy_list
+    )
+    
+    # Download papers
+    try:
+        results = downloader.download_from_file(args.input_file)
+        
+        # Print summary
+        failures = [(identifier, result) for identifier, result in results if not result]
+        if failures:
+            logger.warning("Failed downloads:")
+            for identifier, _ in failures:
+                logger.warning(f"  - {identifier}")
+        
+        return 0 if len(failures) == 0 else 1
+    
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

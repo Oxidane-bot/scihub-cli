@@ -16,35 +16,45 @@ A command-line tool for batch downloading academic papers from Sci-Hub.
 
 ## Installation
 
-### Option 1: Using pipx (Recommended)
+[uv](https://docs.astral.sh/uv/) is an extremely fast Python package and project manager, written in Rust.
 
-[pipx](https://pypa.github.io/pipx/) allows you to install and run Python applications in isolated environments.
+### Install uv
 
-1. Install pipx if you haven't already:
-   ```
-   # On Windows
-   pip install pipx
-   pipx ensurepath
-   
-   # On macOS
-   brew install pipx
-   pipx ensurepath
-   
-   # On Linux
-   python3 -m pip install --user pipx
-   python3 -m pipx ensurepath
-   ```
+```bash
+# macOS and Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-2. Install scihub-cli using pipx:
-   ```
-   # Install from the current directory
-   pipx install .
-   
-   # Or from GitHub
-   pipx install git+https://github.com/Oxidane-bot/scihub-cli.git
-   ```
+# Windows
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-### Option 2: Manual Installation
+# Or via pip
+pip install uv
+```
+
+### Install scihub-cli (Global Installation)
+
+```bash
+# Install globally from the current directory
+uv tool install .
+
+# Or install globally from GitHub
+uv tool install git+https://github.com/Oxidane-bot/scihub-cli.git
+
+# Try without installing (temporary run)
+uvx scihub-cli papers.txt
+```
+
+**Note**: `uv tool install` installs the tool globally on your system, making the `scihub-cli` command available from anywhere in your terminal.
+
+### Global vs Temporary Usage
+
+- **Global Installation**: Use `uv tool install` to install the tool permanently on your system
+- **Temporary Usage**: Use `uvx scihub-cli` to run the tool without installing it
+- **Source Code**: Clone the repo and run directly with Python for development
+
+### Manual Installation (Alternative)
+
+If you prefer to run directly from source:
 
 1. Clone this repository:
    ```
@@ -67,17 +77,17 @@ A command-line tool for batch downloading academic papers from Sci-Hub.
 If you encounter issues with the installation, try the following:
 
 1. Ensure you have Python 3.9+ installed:
-   ```
+   ```bash
    python --version
    ```
 
-2. Verify pipx is installed correctly:
-   ```
-   pipx --version
+2. Verify uv is installed correctly:
+   ```bash
+   uv --version
    ```
 
 3. Check if the command is in your PATH:
-   ```
+   ```bash
    # On Windows
    where scihub-cli
    
@@ -85,8 +95,12 @@ If you encounter issues with the installation, try the following:
    which scihub-cli
    ```
 
-4. If you get "command not found" errors after installation, try:
-   ```
+4. If you get "command not found" errors after installation:
+   ```bash
+   # Update shell environment
+   uv tool update-shell
+   
+   # Manual PATH refresh
    # On Windows
    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","User")
    
@@ -94,15 +108,31 @@ If you encounter issues with the installation, try the following:
    source ~/.bashrc  # or .zshrc, .bash_profile, etc.
    ```
 
+5. If having issues, try:
+   ```bash
+   # List installed tools
+   uv tool list
+   
+   # Upgrade a tool
+   uv tool upgrade scihub-cli
+   
+   # Reinstall
+   uv tool uninstall scihub-cli
+   uv tool install scihub-cli
+   ```
+
 ## Usage
 
 ### Basic Usage
 
 ```bash
-# If installed with pipx
+# If installed with uv
 scihub-cli input_file.txt
 
-# If running directly
+# If running temporarily with uv
+uvx scihub-cli input_file.txt
+
+# If running directly from source
 python -m scihub_cli.scihub_dl input_file.txt
 ```
 
@@ -179,6 +209,36 @@ The tool works by:
 ## Legal Disclaimer
 
 This tool is provided for educational and research purposes only. Users are responsible for ensuring they comply with applicable laws and regulations when using this tool.
+
+## Testing
+
+The project includes comprehensive tests to ensure functionality works correctly:
+
+### Running Tests
+
+```bash
+# Run all tests
+python tests/test_functionality.py
+python tests/test_metadata_utils.py
+python tests/test_installation.py
+
+# Run tests with verbose output
+python -m pytest tests/ -v
+```
+
+### Test Results
+
+The test suite covers:
+- ✅ **Mirror Connectivity**: Tests all Sci-Hub mirrors for accessibility
+- ✅ **Download Functionality**: Tests actual paper downloads with real DOIs
+- ✅ **Metadata Extraction**: Tests paper metadata parsing and filename generation
+- ✅ **Installation**: Verifies proper package installation and CLI availability
+
+### Test Coverage
+
+- **Functionality Tests**: Mirror connectivity, download success, error handling
+- **Metadata Tests**: Title extraction, author parsing, filename generation
+- **Installation Tests**: Package import, command availability, version checking
 
 ## License
 

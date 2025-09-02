@@ -15,6 +15,9 @@ license = {text = "MIT"}
 dependencies = [
     "requests>=2.25.1",
     "beautifulsoup4>=4.9.3",
+    "cloudscraper>=1.2.71",
+    "requests-html>=0.10.0",
+    "fake-useragent>=1.4.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

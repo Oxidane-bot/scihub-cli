@@ -16,35 +16,48 @@
 
 ## 安装方法
 
-### 方法一：使用pipx（推荐）
+[uv](https://docs.astral.sh/uv/) 是一个用Rust编写的极速Python包和项目管理器。
 
-[pipx](https://pypa.github.io/pipx/) 允许您在隔离环境中安装和运行Python应用程序。
+### 安装uv
 
-1. 如果您尚未安装pipx，请先安装：
-   ```
-   # Windows系统
-   pip install pipx
-   pipx ensurepath
-   
-   # macOS系统
-   brew install pipx
-   pipx ensurepath
-   
-   # Linux系统
-   python3 -m pip install --user pipx
-   python3 -m pipx ensurepath
-   ```
+```
+# Windows系统
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-2. 使用pipx安装scihub-cli：
-   ```
-   # 从当前目录安装
-   pipx install .
-   
-   # 或从GitHub安装
-   pipx install git+https://github.com/Oxidane-bot/scihub-cli.git
-   ```
+# macOS系统
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-### 方法二：手动安装
+# Linux系统
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 或通过pip安装
+pip install uv
+```
+
+### 安装scihub-cli（全局安装）
+
+```
+# 从当前目录全局安装
+uv tool install .
+
+# 或从GitHub全局安装
+uv tool install git+https://github.com/Oxidane-bot/scihub-cli.git
+
+# 临时运行（不安装）
+uvx scihub-cli papers.txt
+```
+
+**注意**：`uv tool install` 会在您的系统上全局安装该工具，使 `scihub-cli` 命令在终端的任何位置都可用。
+
+### 全局安装 vs 临时使用
+
+- **全局安装**：使用 `uv tool install` 在您的系统上永久安装该工具
+- **临时使用**：使用 `uvx scihub-cli` 运行工具而无需安装
+- **源码运行**：克隆仓库并使用Python直接运行（适用于开发）
+
+### 手动安装（替代方案）
+
+如果您希望直接从源码运行：
 
 1. 克隆此仓库：
    ```
@@ -71,9 +84,9 @@
    python --version
    ```
 
-2. 验证pipx是否正确安装：
+2. 验证uv是否正确安装：
    ```
-   pipx --version
+   uv --version
    ```
 
 3. 检查命令是否在您的PATH中：
@@ -87,7 +100,10 @@
 
 4. 如果遇到"找不到命令"错误，请尝试：
    ```
-   # 在Windows上
+   # 更新shell环境
+   uv tool update-shell
+   
+   # 在Windows上手动刷新PATH
    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","User")
    
    # 在macOS/Linux上
@@ -99,8 +115,11 @@
 ### 基本用法
 
 ```bash
-# 如果使用pipx安装
+# 如果使用uv安装
 scihub-cli 输入文件.txt
+
+# 如果临时运行
+uvx scihub-cli 输入文件.txt
 
 # 如果直接运行
 python -m scihub_cli.scihub_dl 输入文件.txt
@@ -157,6 +176,9 @@ scihub-cli -m https://sci-hub.se papers.txt
 
 # 增加详细度
 scihub-cli -v papers.txt
+
+# 临时运行（不安装）
+uvx scihub-cli papers.txt
 ```
 
 ## 工作原理
@@ -179,6 +201,36 @@ scihub-cli -v papers.txt
 ## 法律免责声明
 
 此工具仅供教育和研究目的使用。用户负责确保其使用符合适用的法律法规。
+
+## 测试
+
+项目包含全面的测试以确保功能正常工作：
+
+### 运行测试
+
+```bash
+# 运行所有测试
+python tests/test_functionality.py
+python tests/test_metadata_utils.py
+python tests/test_installation.py
+
+# 使用详细输出运行测试
+python -m pytest tests/ -v
+```
+
+### 测试结果
+
+测试套件涵盖：
+- ✅ **镜像连接性**：测试所有Sci-Hub镜像站点的可访问性
+- ✅ **下载功能**：使用真实DOI测试实际论文下载
+- ✅ **元数据提取**：测试论文元数据解析和文件名生成
+- ✅ **安装**：验证正确的包安装和CLI可用性
+
+### 测试覆盖范围
+
+- **功能测试**：镜像连接性、下载成功、错误处理
+- **元数据测试**：标题提取、作者解析、文件名生成
+- **安装测试**：包导入、命令可用性、版本检查
 
 ## 许可证
 

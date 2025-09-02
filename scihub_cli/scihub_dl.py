@@ -22,11 +22,20 @@ DEFAULT_OUTPUT_DIR = './downloads'
 DEFAULT_TIMEOUT = 30
 DEFAULT_RETRIES = 3
 DEFAULT_PARALLEL = 3
-DEFAULT_MIRRORS = [
-    'https://sci-hub.se',
-    'https://sci-hub.st',
-    'https://sci-hub.ru',
-]
+# Mirror configuration by difficulty level (科学分层策略)
+MIRROR_TIERS = {
+    'easy': [  # No Cloudflare protection, use basic requests
+        'https://www.sci-hub.ee',
+        'https://sci-hub.ru', 
+        'https://sci-hub.ren',
+        'https://sci-hub.wf',
+    ],
+    'hard': [  # Strong Cloudflare protection, needs advanced bypass
+        'https://sci-hub.se',  # The final boss
+    ]
+}
+
+DEFAULT_MIRRORS = MIRROR_TIERS['easy'] + MIRROR_TIERS['hard']
 
 # Use user's home directory for logs
 user_home = str(Path.home())
@@ -74,15 +83,37 @@ class SciHubDownloader:
         os.makedirs(output_dir, exist_ok=True)
     
     def _get_working_mirror(self):
-        """Try mirrors and return the first one that responds."""
-        for mirror in self.mirrors:
+        """Try mirrors with tiered strategy: easy first, then hard."""
+        
+        # Tier 1: Easy mirrors first (fastest)
+        logger.info("[Tier 1] Trying easy mirrors first...")
+        for mirror in MIRROR_TIERS['easy']:
             try:
                 response = self.session.get(mirror, timeout=self.timeout)
                 if response.status_code == 200:
-                    logger.info(f"Using mirror: {mirror}")
+                    logger.info(f"SUCCESS: Using easy mirror: {mirror}")
                     return mirror
+                else:
+                    logger.debug(f"FAIL: {mirror} returned {response.status_code}")
             except requests.RequestException as e:
-                logger.warning(f"Mirror {mirror} failed: {e}")
+                logger.debug(f"FAIL: {mirror} failed: {e}")
+        
+        # Tier 2: Hard mirrors (sci-hub.se) as last resort
+        logger.info("[Tier 2] Easy mirrors failed, trying hard mirrors...")
+        for mirror in MIRROR_TIERS['hard']:
+            try:
+                response = self.session.get(mirror, timeout=self.timeout)
+                if response.status_code == 200:
+                    logger.info(f"SUCCESS: Using hard mirror: {mirror}")
+                    return mirror
+                elif response.status_code == 403:
+                    logger.warning(f"PROTECTED: {mirror} is 403 protected, but might work for downloads")
+                    return mirror  # Return anyway, might work for actual downloads
+                else:
+                    logger.debug(f"FAIL: {mirror} returned {response.status_code}")
+            except requests.RequestException as e:
+                logger.debug(f"FAIL: {mirror} failed: {e}")
+        
         raise Exception("All mirrors are unavailable")
     
     def _normalize_doi(self, identifier):
