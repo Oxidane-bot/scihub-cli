@@ -22,25 +22,53 @@ class FileDownloader:
         try:
             logger.info(f"Downloading to {output_path}")
             response = self.session.get(url, timeout=self.timeout, stream=True)
-            
+
             if response.status_code == 200:
                 # Check content type
                 content_type = response.headers.get('Content-Type', '')
                 if 'pdf' not in content_type.lower() and 'octet-stream' not in content_type.lower():
                     logger.warning(f"Response is not a PDF: {content_type}")
-                
-                # Save the file
-                with open(output_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=settings.CHUNK_SIZE):
-                        if chunk:
-                            f.write(chunk)
-                
-                return True, None
+                    # If it's clearly HTML, reject it
+                    if 'html' in content_type.lower():
+                        error_msg = f"Server returned HTML instead of PDF (Content-Type: {content_type})"
+                        logger.error(error_msg)
+                        return False, error_msg
+
+                # Download to temporary location first
+                import tempfile
+                import os
+                temp_fd, temp_path = tempfile.mkstemp(suffix='.pdf')
+
+                try:
+                    with os.fdopen(temp_fd, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=settings.CHUNK_SIZE):
+                            if chunk:
+                                f.write(chunk)
+
+                    # Verify it's actually a PDF by checking file header
+                    with open(temp_path, 'rb') as f:
+                        header = f.read(4)
+                        if header != b'%PDF':
+                            error_msg = "Downloaded file is not a valid PDF (missing PDF header)"
+                            logger.error(error_msg)
+                            os.unlink(temp_path)
+                            return False, error_msg
+
+                    # If valid, move to final destination
+                    import shutil
+                    shutil.move(temp_path, output_path)
+                    return True, None
+
+                except Exception as e:
+                    # Clean up temp file on error
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                    raise
             else:
                 error_msg = f"Failed to download file: HTTP {response.status_code}"
                 logger.warning(error_msg)
                 return False, error_msg
-                
+
         except Exception as e:
             error_msg = f"Error downloading file: {e}"
             logger.error(error_msg)
