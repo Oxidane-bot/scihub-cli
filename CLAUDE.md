@@ -196,19 +196,44 @@ Key settings in `config/settings.py`:
 - **Year threshold**: 2021 (papers before/after use different source priority)
 - **Year-based routing**: Enabled by default
 
-### Environment Variables
+### Configuration Methods
 
-Configure via environment variables:
+#### 1. Config File (Recommended)
+
+Location: `~/.scihub-cli/config.json`
+
 ```bash
-export SCIHUB_CLI_EMAIL="your-email@example.com"  # Required for Unpaywall
-export SCIHUB_YEAR_THRESHOLD=2021                 # Year routing threshold
-export SCIHUB_ENABLE_ROUTING=true                 # Enable intelligent routing
-export SCIHUB_OUTPUT_DIR="./downloads"            # Output directory
-export SCIHUB_TIMEOUT=30                          # Request timeout
-export SCIHUB_RETRIES=3                           # Retry attempts
+# First-time setup - will prompt for email
+scihub-cli papers.txt
+
+# Or set email via command line
+scihub-cli papers.txt --email your-email@university.edu
+
+# Manually edit config file
+cat ~/.scihub-cli/config.json
+{
+  "email": "your-email@university.edu"
+}
 ```
 
-**Note**: Use a real email address for Unpaywall API (e.g., `researcher@university.edu`). Test emails like `test@example.com` will be rejected.
+#### 2. Command-Line Parameter
+
+```bash
+scihub-cli papers.txt --email your-email@university.edu
+```
+
+#### 3. Environment Variables (Legacy)
+
+```bash
+export SCIHUB_CLI_EMAIL="your-email@example.com"
+export SCIHUB_YEAR_THRESHOLD=2021
+export SCIHUB_ENABLE_ROUTING=true
+```
+
+**Priority**: CLI argument > Config file > Environment variable
+
+**Note**: Use a real email address for Unpaywall API (e.g., `researcher@university.edu`).
+Blocked: `*@example.com` domains are rejected by Unpaywall.
 
 ## Success Metrics
 

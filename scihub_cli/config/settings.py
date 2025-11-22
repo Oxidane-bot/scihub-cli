@@ -4,7 +4,7 @@ Application settings and configuration for Sci-Hub CLI.
 
 import os
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 class Settings:
     """Centralized application settings."""
@@ -14,7 +14,7 @@ class Settings:
     DEFAULT_TIMEOUT = 30
     DEFAULT_RETRIES = 3
     DEFAULT_PARALLEL = 3
-    DEFAULT_EMAIL = 'user@example.com'
+    # No default email - user must configure
 
     # File and content validation
     MIN_FILE_SIZE = 10000  # Less than 10KB is suspicious
@@ -32,15 +32,21 @@ class Settings:
     LOG_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
 
     def __init__(self):
-        """Initialize settings with environment variable support."""
+        """Initialize settings with config file and environment variable support."""
         self.output_dir = os.getenv('SCIHUB_OUTPUT_DIR', self.DEFAULT_OUTPUT_DIR)
         self.timeout = int(os.getenv('SCIHUB_TIMEOUT', self.DEFAULT_TIMEOUT))
         self.retries = int(os.getenv('SCIHUB_RETRIES', self.DEFAULT_RETRIES))
         self.parallel = int(os.getenv('SCIHUB_PARALLEL', self.DEFAULT_PARALLEL))
-        self.email = os.getenv('SCIHUB_CLI_EMAIL', self.DEFAULT_EMAIL)
         self.year_threshold = int(os.getenv('SCIHUB_YEAR_THRESHOLD', self.YEAR_THRESHOLD))
         self.enable_year_routing = os.getenv('SCIHUB_ENABLE_ROUTING', str(self.ENABLE_YEAR_ROUTING)).lower() == 'true'
-        
+
+        # Email configuration priority:
+        # 1. Environment variable (for backward compatibility)
+        # 2. Config file
+        # 3. None (will prompt user)
+        from .user_config import user_config
+        self.email = os.getenv('SCIHUB_CLI_EMAIL') or user_config.get_email()
+
         # Logging configuration
         user_home = str(Path.home())
         self.log_dir = os.path.join(user_home, '.scihub-cli', 'logs')
