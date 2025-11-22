@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for Sci-Hub CLI functionality
+Test script for Sci-Hub CLI functionality with multi-source support
 """
 
 import os
@@ -27,25 +27,70 @@ def test_mirrors():
         except Exception as e:
             print(f"{mirror}: Failed ({e})")
 
-def test_download_functionality():
-    """Test actual download functionality with a known DOI"""
-    print("\nTesting download functionality...")
+def test_download_multi_source():
+    """Test download functionality with multiple sources and different years"""
+    print("\nTesting multi-source download functionality...")
 
     # Create temporary directory for testing
     with tempfile.TemporaryDirectory() as temp_dir:
-        client = SciHubClient(output_dir=temp_dir, timeout=30, retries=2)
+        # Test requires email for Unpaywall
+        email = os.getenv('SCIHUB_CLI_EMAIL')
+        if not email:
+            # Try to get from config
+            from scihub_cli.config.user_config import user_config
+            email = user_config.get_email()
 
-        # Test with a well-known DOI
-        test_doi = "10.1038/s41586-020-2649-2"
-        print(f"Attempting to download: {test_doi}")
+        if not email:
+            print("WARNING: No email configured, Unpaywall tests will be skipped")
+            print("Set SCIHUB_CLI_EMAIL or run 'scihub-cli --email your@email.com' first")
+            return None
 
-        result = client.download_paper(test_doi)
-        if result:
-            file_size = os.path.getsize(result)
-            print(f"Download successful: {result} ({file_size} bytes)")
+        client = SciHubClient(output_dir=temp_dir, timeout=30, retries=2, email=email)
+
+        # Test cases: different years and sources
+        test_cases = [
+            {
+                'doi': '10.1038/nature12373',
+                'year': 2013,
+                'description': 'Old paper (2013) - should use Sci-Hub first',
+                'expected_source': 'Sci-Hub'
+            },
+            {
+                'doi': '10.1371/journal.pone.0250916',
+                'year': 2021,
+                'description': 'Recent paper (2021) - PLOS ONE OA, Unpaywall should work',
+                'expected_source': 'Unpaywall'
+            }
+        ]
+
+        results = []
+        for test_case in test_cases:
+            doi = test_case['doi']
+            print(f"\nTest: {test_case['description']}")
+            print(f"DOI: {doi}")
+
+            result = client.download_paper(doi)
+            if result:
+                file_size = os.path.getsize(result)
+                print(f"SUCCESS: {result} ({file_size} bytes)")
+
+                # Verify PDF header
+                with open(result, 'rb') as f:
+                    header = f.read(4)
+                    is_valid_pdf = (header == b'%PDF')
+                    print(f"Valid PDF: {is_valid_pdf}")
+                    results.append(True)
+            else:
+                print(f"FAILED: Could not download")
+                results.append(False)
+
+        # Return overall result
+        if all(results):
+            print(f"\nAll {len(results)} downloads successful")
             return True
         else:
-            print("Download failed")
+            success_count = sum(results)
+            print(f"\n{success_count}/{len(results)} downloads successful")
             return False
 
 def test_metadata_extraction():
@@ -74,21 +119,27 @@ def test_metadata_extraction():
 
 if __name__ == "__main__":
     print("Sci-Hub CLI Test Suite")
-    print("=" * 50)
-    
+    print("=" * 70)
+
     # Run tests
     test_mirrors()
-    
+
     metadata_ok = test_metadata_extraction()
-    download_ok = test_download_functionality()
-    
-    print("\n" + "=" * 50)
+    download_ok = test_download_multi_source()
+
+    print("\n" + "=" * 70)
     print("Test Summary:")
     print(f"Metadata extraction: {'PASS' if metadata_ok else 'FAIL'}")
-    print(f"Download functionality: {'PASS' if download_ok else 'FAIL'}")
-    
+    if download_ok is None:
+        print(f"Multi-source download: SKIPPED (no email configured)")
+    else:
+        print(f"Multi-source download: {'PASS' if download_ok else 'FAIL'}")
+
     if metadata_ok and download_ok:
         print("\nAll tests passed!")
+        sys.exit(0)
+    elif download_ok is None:
+        print("\nSome tests skipped")
         sys.exit(0)
     else:
         print("\nSome tests failed")

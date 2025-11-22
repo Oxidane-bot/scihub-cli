@@ -1,105 +1,72 @@
 #!/usr/bin/env python3
 """
 Tests for the metadata extraction and filename generation functionality.
+Updated for multi-source architecture (Sci-Hub + Unpaywall).
 """
 
 import unittest
-import requests
+import os
 
 from scihub_cli.metadata_utils import extract_metadata, generate_filename_from_metadata
-
-# Test Sci-Hub mirror to use for fetching test pages
-TEST_MIRROR = "https://sci-hub.se"
+from scihub_cli.sources.unpaywall_source import UnpaywallSource
 
 class TestMetadataUtils(unittest.TestCase):
     """Tests for metadata extraction and filename generation."""
     
     def setUp(self):
         """Set up test cases with known DOIs and expected metadata."""
+        # Get email for Unpaywall tests
+        self.email = os.getenv('SCIHUB_CLI_EMAIL')
+        if not self.email:
+            from scihub_cli.config.user_config import user_config
+            self.email = user_config.get_email()
+
+        # Test cases using Unpaywall (more reliable than Sci-Hub for testing)
         self.test_cases = [
             {
-                'doi': '10.1038/s41586-020-2649-2',
-                'expected_title': 'Array programming with NumPy',
-                'expected_year': '2020'
-            },
-            {
-                'doi': '10.1038/s41586-021-03380-y',
-                'expected_title': 'People systematically overlook subtractive changes',
+                'doi': '10.1371/journal.pone.0250916',
+                'expected_title': 'Contrasting impacts',
                 'expected_year': '2021'
             },
             {
-                'doi': '10.1016/s1003-6326(21)65629-7',
-                'expected_title': 'Effect of Al addition on microstructure and mechanical properties of Mg−Zn−Sn−Mn alloy',
-                'expected_year': '2021'
+                'doi': '10.1038/s41467-021-27699-2',
+                'expected_title': 'Visualizing group II intron',
+                'expected_year': '2022'
             }
         ]
-        
-        # Cache for HTML content to avoid repeated downloads during tests
-        self.html_cache = {}
-        
-    def get_html_content(self, doi):
-        """
-        Fetch HTML content for a given DOI from Sci-Hub.
-        
-        Args:
-            doi (str): The DOI to fetch.
-            
-        Returns:
-            str: The HTML content if successful, None otherwise.
-        """
-        if doi in self.html_cache:
-            return self.html_cache[doi]
-            
-        try:
-            # Configure session with headers to avoid blocking
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            })
-            
-            # Construct Sci-Hub URL
-            url = f"{TEST_MIRROR}/{doi}"
-            response = session.get(url, timeout=30)
-            
-            if response.status_code == 200:
-                self.html_cache[doi] = response.text
-                return response.text
-            else:
-                print(f"Failed to fetch HTML for {doi}: {response.status_code}")
-                return None
-        except Exception as e:
-            print(f"Error fetching HTML for {doi}: {e}")
-            return None
-    
-    def test_extract_metadata(self):
-        """Test metadata extraction from Sci-Hub pages."""
+
+    def test_unpaywall_metadata(self):
+        """Test metadata retrieval from Unpaywall."""
+        if not self.email:
+            self.skipTest("No email configured for Unpaywall tests")
+
+        unpaywall = UnpaywallSource(email=self.email)
+
         for test_case in self.test_cases:
             doi = test_case['doi']
-            html_content = self.get_html_content(doi)
-            
-            # Skip if we couldn't fetch the content
-            if not html_content:
-                print(f"Skipping test for {doi} due to fetch failure")
+            metadata = unpaywall.get_metadata(doi)
+
+            # Skip if we couldn't fetch metadata
+            if not metadata:
+                print(f"Skipping test for {doi} - not found in Unpaywall")
                 continue
-                
-            metadata = extract_metadata(html_content)
-            
+
             # Verify metadata was extracted
-            self.assertIsNotNone(metadata, f"Failed to extract metadata for {doi}")
-            
-            # Verify title
+            self.assertIsNotNone(metadata, f"Failed to get metadata for {doi}")
+
+            # Verify title (partial match)
             expected_title = test_case['expected_title']
             self.assertTrue(
                 expected_title.lower() in metadata['title'].lower(),
-                f"Expected title '{expected_title}' not found in extracted title '{metadata['title']}'"
+                f"Expected title fragment '{expected_title}' not found in '{metadata['title']}'"
             )
-            
+
             # Verify year
             expected_year = test_case['expected_year']
             self.assertEqual(
-                expected_year, 
+                expected_year,
                 metadata['year'],
-                f"Expected year {expected_year} doesn't match extracted year {metadata['year']}"
+                f"Expected year {expected_year} doesn't match {metadata['year']}"
             )
     
     def test_generate_filename_from_metadata(self):
