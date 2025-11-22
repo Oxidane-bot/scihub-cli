@@ -53,17 +53,17 @@ class SourceManager:
         # Build source chain based on year
         if year is None:
             # Unknown year: conservative strategy (OA first)
-            logger.info(f"[Router] Year unknown for {doi}, using conservative strategy: Unpaywall → Sci-Hub")
+            logger.info(f"[Router] Year unknown for {doi}, using conservative strategy: Unpaywall -> Sci-Hub")
             chain = self._build_chain(["Unpaywall", "Sci-Hub"])
 
         elif year < self.year_threshold:
             # Old papers: Sci-Hub has excellent coverage
-            logger.info(f"[Router] Year {year} < {self.year_threshold}, using Sci-Hub → Unpaywall")
+            logger.info(f"[Router] Year {year} < {self.year_threshold}, using Sci-Hub -> Unpaywall")
             chain = self._build_chain(["Sci-Hub", "Unpaywall"])
 
         else:
             # New papers: Sci-Hub has zero coverage, OA first
-            logger.info(f"[Router] Year {year} >= {self.year_threshold}, using Unpaywall → Sci-Hub")
+            logger.info(f"[Router] Year {year} >= {self.year_threshold}, using Unpaywall -> Sci-Hub")
             chain = self._build_chain(["Unpaywall", "Sci-Hub"])
 
         return chain
