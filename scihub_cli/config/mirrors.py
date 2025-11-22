@@ -2,7 +2,7 @@
 Mirror configuration and management for Sci-Hub CLI.
 """
 
-from typing import List, Dict, Optional
+from typing import List
 from enum import Enum
 
 class MirrorTier(Enum):

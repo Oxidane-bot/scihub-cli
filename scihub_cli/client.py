@@ -67,15 +67,15 @@ class SciHubClient:
         """Single download attempt."""
         # Get working mirror
         mirror = self.mirror_manager.get_working_mirror()
-        
+
         # Format DOI for Sci-Hub URL if it's a DOI
-        formatted_doi = (self.doi_processor.format_doi_for_url(doi) 
+        formatted_doi = (self.doi_processor.format_doi_for_url(doi)
                         if doi.startswith('10.') else doi)
-        
+
         # Construct Sci-Hub URL
         scihub_url = f"{mirror}/{formatted_doi}"
         logger.debug(f"Accessing Sci-Hub URL: {scihub_url}")
-        
+
         # Get the Sci-Hub page
         html_content, status_code = self.downloader.get_page_content(scihub_url)
         if not html_content or status_code != 200:
@@ -88,11 +88,23 @@ class SciHubClient:
                     raise Exception(f"Failed to access Sci-Hub page: {status_code}")
             else:
                 raise Exception(f"Failed to access Sci-Hub page: {status_code}")
-        
+
         # Extract the download URL
         download_url = self.parser.extract_download_url(html_content, mirror)
         if not download_url:
-            raise Exception(f"Could not extract download URL for {doi}")
+            # Try fallback with original DOI format if extraction failed
+            if doi.startswith('10.'):
+                fallback_url = f"{mirror}/{doi}"
+                logger.debug(f"Trying fallback URL without formatting: {fallback_url}")
+                html_content, status_code = self.downloader.get_page_content(fallback_url)
+                if html_content and status_code == 200:
+                    download_url = self.parser.extract_download_url(html_content, mirror)
+                    if not download_url:
+                        raise Exception(f"Could not extract download URL for {doi}")
+                else:
+                    raise Exception(f"Fallback URL failed: {status_code}")
+            else:
+                raise Exception(f"Could not extract download URL for {doi}")
         
         logger.debug(f"Download URL: {download_url}")
         

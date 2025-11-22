@@ -4,7 +4,6 @@ File management and naming utilities.
 
 import os
 import re
-from pathlib import Path
 from typing import Optional
 from ..config.settings import settings
 from ..metadata_utils import extract_metadata, generate_filename_from_metadata

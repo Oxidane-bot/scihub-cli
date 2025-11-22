@@ -4,7 +4,7 @@ Mirror management and selection logic.
 
 import requests
 from typing import List, Optional
-from ..config.mirrors import MirrorConfig, MirrorTier
+from ..config.mirrors import MirrorConfig
 from ..config.settings import settings
 from ..utils.logging import get_logger
 

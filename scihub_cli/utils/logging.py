@@ -4,7 +4,6 @@ Logging configuration for Sci-Hub CLI.
 
 import logging
 import sys
-from pathlib import Path
 
 def setup_logging(verbose: bool = False, log_file: str = None) -> logging.Logger:
     """Set up logging configuration."""

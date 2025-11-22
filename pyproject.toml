@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 [project.scripts]
-scihub-cli = "scihub_cli.scihub_dl:main"
+scihub-cli = "scihub_cli.scihub_dl_refactored:main"
 
 [tool.setuptools]
 packages = ["scihub_cli"]

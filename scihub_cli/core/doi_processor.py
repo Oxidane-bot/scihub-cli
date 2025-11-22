@@ -4,7 +4,6 @@ DOI and URL normalization utilities.
 
 import re
 from urllib.parse import urlparse, quote
-from typing import Optional
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)

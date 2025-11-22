@@ -5,7 +5,6 @@ HTTP session management with stealth features.
 import random
 import time
 import requests
-from typing import Dict, List, Optional
 from urllib.parse import urlparse
 from ..utils.logging import get_logger
 

@@ -3,11 +3,8 @@
 Tests for the metadata extraction and filename generation functionality.
 """
 
-import os
 import unittest
 import requests
-from bs4 import BeautifulSoup
-import re
 
 from scihub_cli.metadata_utils import extract_metadata, generate_filename_from_metadata
 

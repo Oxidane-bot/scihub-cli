@@ -4,7 +4,6 @@ Test script to verify scihub-cli installation.
 """
 
 import sys
-import importlib.util
 import subprocess
 
 def test_import():

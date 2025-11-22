@@ -5,8 +5,6 @@ Implements anti-detection measures for robust paper downloading
 
 import random
 import time
-import json
-import os
 from typing import List, Dict, Optional
 import requests
 from urllib.parse import urlparse
@@ -199,10 +197,7 @@ def get_selenium_driver():
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        
+
         # Try to use undetected-chromedriver if available
         try:
             import undetected_chromedriver as uc

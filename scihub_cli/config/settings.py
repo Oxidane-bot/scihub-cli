@@ -4,7 +4,7 @@ Application settings and configuration for Sci-Hub CLI.
 
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 class Settings:
     """Centralized application settings."""

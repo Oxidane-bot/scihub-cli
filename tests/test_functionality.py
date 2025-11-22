@@ -6,22 +6,22 @@ Test script for Sci-Hub CLI functionality
 import os
 import sys
 import tempfile
-import time
-from pathlib import Path
 
 # Add the scihub_cli module to the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scihub_cli.scihub_dl import SciHubDownloader
+from scihub_cli.client import SciHubClient
+from scihub_cli.core.mirror_manager import MirrorManager
 
 def test_mirrors():
     """Test all mirrors for basic connectivity"""
     print("Testing mirror connectivity...")
-    downloader = SciHubDownloader()
-    
-    for mirror in downloader.mirrors:
+    mirror_manager = MirrorManager()
+
+    for mirror in mirror_manager.mirrors:
         try:
-            response = downloader.session.get(mirror, timeout=10)
+            import requests
+            response = requests.get(mirror, timeout=10)
             status = "Working" if response.status_code == 200 else f"Failed ({response.status_code})"
             print(f"{mirror}: {status}")
         except Exception as e:
@@ -30,16 +30,16 @@ def test_mirrors():
 def test_download_functionality():
     """Test actual download functionality with a known DOI"""
     print("\nTesting download functionality...")
-    
+
     # Create temporary directory for testing
     with tempfile.TemporaryDirectory() as temp_dir:
-        downloader = SciHubDownloader(output_dir=temp_dir, timeout=30, retries=2)
-        
+        client = SciHubClient(output_dir=temp_dir, timeout=30, retries=2)
+
         # Test with a well-known DOI
         test_doi = "10.1038/s41586-020-2649-2"
         print(f"Attempting to download: {test_doi}")
-        
-        result = downloader.download_paper(test_doi)
+
+        result = client.download_paper(test_doi)
         if result:
             file_size = os.path.getsize(result)
             print(f"Download successful: {result} ({file_size} bytes)")
@@ -52,7 +52,7 @@ def test_metadata_extraction():
     """Test metadata extraction from Sci-Hub pages"""
     print("\nTesting metadata extraction...")
     
-    from scihub_cli.metadata_utils import extract_metadata, generate_filename_from_metadata
+    from scihub_cli.metadata_utils import generate_filename_from_metadata
     
     # This would require fetching HTML from Sci-Hub, which we'll simulate
     print("Metadata extraction functions are available")
