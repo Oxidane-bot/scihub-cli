@@ -144,15 +144,31 @@ class StealthSession:
 
 class BasicSession:
     """Basic HTTP session without stealth features."""
-    
+
     def __init__(self, timeout: int = 30):
         self.session = requests.Session()
         self.timeout = timeout
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
-    
+        # Default browser User-Agent (will be overridden per-request based on domain)
+        self.default_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+
+    def _get_user_agent_for_url(self, url: str) -> str:
+        """Get appropriate User-Agent based on domain."""
+        domain = urlparse(url).netloc.lower()
+
+        # MDPI uses User-Agent whitelist, allows curl but blocks browsers
+        if 'mdpi.com' in domain or 'mdpi-res.com' in domain:
+            return 'curl/8.0.0'
+
+        # Default: use browser User-Agent for other sites
+        return self.default_user_agent
+
     def get(self, url: str, **kwargs) -> requests.Response:
-        """Simple GET request."""
+        """Simple GET request with domain-specific User-Agent."""
         kwargs.setdefault('timeout', self.timeout)
+
+        # Set User-Agent based on target domain
+        self.session.headers.update({
+            'User-Agent': self._get_user_agent_for_url(url)
+        })
+
         return self.session.get(url, **kwargs)
