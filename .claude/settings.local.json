@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "mcp__fetch__fetch",
-      "mcp__brave-search__brave_web_search"
-    ],
-    "deny": []
-  }
-}
