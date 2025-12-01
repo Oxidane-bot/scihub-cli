@@ -3,7 +3,7 @@ Unpaywall source implementation.
 """
 
 import requests
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from .base import PaperSource
 from ..utils.logging import get_logger
 from ..utils.retry import APIRetryConfig, RetryableException, PermanentException, retry_with_classification
@@ -74,7 +74,7 @@ class UnpaywallSource(PaperSource):
             logger.warning(f"[Unpaywall] No PDF URL in OA location for {doi}")
             return None
 
-    def get_metadata(self, doi: str) -> Optional[Dict[str, str]]:
+    def get_metadata(self, doi: str) -> Optional[Dict[str, Any]]:
         """
         Get metadata from Unpaywall (returns cached if available).
 
@@ -82,7 +82,8 @@ class UnpaywallSource(PaperSource):
             doi: The DOI to look up
 
         Returns:
-            Dictionary with title, year, etc. or None
+            Dictionary with title (str), year (int), journal (str),
+            is_oa (bool), oa_status (str), or None if not found
         """
         return self._fetch_metadata(doi)
 
@@ -163,9 +164,11 @@ class UnpaywallSource(PaperSource):
                         logger.debug(f"[Unpaywall] Only landing page available, no direct PDF: {fallback_url}")
                         # pdf_url remains None
 
+                # Keep year as int for proper comparison with thresholds
+                year = data.get("year")
                 return {
                     "title": data.get("title", ""),
-                    "year": str(data.get("year", "")),
+                    "year": int(year) if year else None,
                     "journal": data.get("journal_name", ""),
                     "is_oa": data.get("is_oa", False),
                     "oa_status": data.get("oa_status", ""),
