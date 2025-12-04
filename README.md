@@ -152,18 +152,16 @@ https://www.nature.com/articles/s41586-021-03380-y
 10.1016/s1003-6326(21)65629-7
 ```
 
-### First-Time Setup
+### Optional Email (Unpaywall)
 
-When you first run scihub-cli, you'll be prompted to configure your email for Unpaywall API:
+Set an email if you want Unpaywall open-access lookup. If no email is provided, Unpaywall is skipped automatically.
 
 ```bash
-scihub-cli papers.txt
-
-# Or set email directly
+# Enable Unpaywall by setting email
 scihub-cli papers.txt --email your-email@university.edu
 ```
 
-Your email is saved to `~/.scihub-cli/config.json` and used for Unpaywall API requests. Unpaywall requires email for rate limiting (not tracking).
+The email is saved to `~/.scihub-cli/config.json` and sent only to Unpaywall for rate limiting (not tracking).
 
 ### Command-Line Options
 
@@ -187,7 +185,7 @@ options:
   -r RETRIES, --retries RETRIES
                         Number of retries for failed downloads (default: 3)
   -p PARALLEL, --parallel PARALLEL
-                        Number of parallel downloads (default: 3)
+                        Reserved; downloads are processed sequentially
   --email EMAIL         Email for Unpaywall API (saves to config file)
   -v, --verbose         Enable verbose logging
   --version             show program's version number and exit

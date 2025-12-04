@@ -59,20 +59,24 @@ class SciHubClient:
         # Multi-source support
         if source_manager is None:
             # Initialize paper sources
-            scihub_source = SciHubSource(
-                mirror_manager=self.mirror_manager,
-                parser=self.parser,
-                doi_processor=self.doi_processor,
-                downloader=self.downloader,
-            )
-            unpaywall_source = UnpaywallSource(email=self.email, timeout=self.timeout)
-            core_source = CORESource(api_key=settings.core_api_key, timeout=self.timeout)
+            sources = [
+                SciHubSource(
+                    mirror_manager=self.mirror_manager,
+                    parser=self.parser,
+                    doi_processor=self.doi_processor,
+                    downloader=self.downloader,
+                )
+            ]
 
-            # Create source manager with intelligent routing
-            # Source order: Unpaywall -> CORE -> Sci-Hub (for new papers)
-            # Source order: Sci-Hub -> Unpaywall -> CORE (for old papers)
+            # Only enable Unpaywall when email is provided
+            if self.email:
+                sources.insert(0, UnpaywallSource(email=self.email, timeout=self.timeout))
+
+            # CORE does not require email, keep as OA fallback
+            sources.append(CORESource(api_key=settings.core_api_key, timeout=self.timeout))
+
             self.source_manager = SourceManager(
-                sources=[scihub_source, unpaywall_source, core_source],
+                sources=sources,
                 year_threshold=settings.year_threshold,
                 enable_year_routing=settings.enable_year_routing,
             )

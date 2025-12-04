@@ -46,6 +46,12 @@ class FileDownloader:
             Tuple of (success: bool, error_msg: Optional[str])
         """
         logger.info(f"Downloading to {output_path}")
+        # Ensure output directory exists before attempting download
+        import os
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
 
         def _attempt_download():
             return self._download_once(url, output_path)

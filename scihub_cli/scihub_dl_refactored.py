@@ -15,52 +15,11 @@ from .config.user_config import user_config
 from .utils.logging import get_logger, setup_logging
 
 
-def check_email_config():
-    """Check if email is configured, prompt user if not."""
-    from .config.settings import settings
-
-    if settings.email:
-        return settings.email
-
-    # Email not configured - prompt user
-    print("\n" + "=" * 70)
-    print("CONFIGURATION REQUIRED: Unpaywall Email")
-    print("=" * 70)
-    print("\nTo download papers from 2021+, scihub-cli uses Unpaywall API.")
-    print("Unpaywall requires an email address (used only for abuse control).")
-    print("\nYour email will be stored in: ~/.scihub-cli/config.json")
-    print("Privacy: Unpaywall does not track you or sell your data.")
-    print("See: https://unpaywall.org/products/api\n")
-
-    while True:
-        email = input("Enter your email address: ").strip()
-
-        if not email:
-            print("Error: Email cannot be empty.")
-            continue
-
-        if "@" not in email or "." not in email.split("@")[-1]:
-            print("Error: Please enter a valid email address.")
-            continue
-
-        if "example.com" in email:
-            print(
-                "Error: 'example.com' is blocked by Unpaywall. Use a real email (e.g., your Gmail)."
-            )
-            continue
-
-        # Save to config file
-        user_config.set_email(email)
-        print(f"\nEmail saved to: {user_config.get_config_path()}")
-        print("You can change it later by editing the config file or running this setup again.\n")
-        return email
-
-
 def main():
     """Main entry point for the script."""
     parser = argparse.ArgumentParser(
         description="Multi-source academic paper downloader.",
-        epilog="v0.2.0 - Sources: Sci-Hub, Unpaywall, CORE | Features: intelligent routing, parallel downloads",
+        epilog="v0.2.0 - Sources: Sci-Hub, Unpaywall, CORE | Features: intelligent routing",
     )
 
     parser.add_argument("input_file", help="Text file containing DOIs or URLs (one per line)")
@@ -90,7 +49,7 @@ def main():
         "--parallel",
         type=int,
         default=settings.parallel,
-        help=f"Number of parallel downloads (default: {settings.parallel})",
+        help="Reserved; downloads are processed sequentially",
     )
     parser.add_argument("--email", help="Email for Unpaywall API (saves to config file)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
@@ -103,14 +62,12 @@ def main():
     logger = get_logger(__name__)
 
     # Handle email configuration
-    email = args.email
-    if email:
-        # Save command-line email to config
-        user_config.set_email(email)
-        logger.info(f"Email saved to config: {email}")
-    else:
-        # Check/prompt for email
-        email = check_email_config()
+    email = args.email or settings.email
+    if args.email:
+        user_config.set_email(args.email)
+        logger.info(f"Email saved to config: {args.email}")
+    elif not email:
+        logger.info("No email configured; Unpaywall will be disabled for this run")
 
     # Initialize client with parameters
     mirrors = [args.mirror] if args.mirror else None

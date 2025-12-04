@@ -141,6 +141,17 @@ https://www.nature.com/articles/s41586-021-03380-y
 10.1016/s1003-6326(21)65629-7
 ```
 
+### 可选邮箱（Unpaywall）
+
+如果需要启用 Unpaywall 开放获取查询，请提供邮箱；未设置邮箱时会自动跳过 Unpaywall。
+
+```bash
+# 设置邮箱以启用 Unpaywall
+scihub-cli papers.txt --email your-email@university.edu
+```
+
+邮箱会保存到 `~/.scihub-cli/config.json`，仅用于 Unpaywall 的速率限制，不会跟踪。
+
 ### 命令行选项
 
 ```
@@ -162,7 +173,7 @@ https://www.nature.com/articles/s41586-021-03380-y
   -r RETRIES, --retries RETRIES
                         下载失败时的重试次数（默认: 3）
   -p PARALLEL, --parallel PARALLEL
-                        并行下载数量（默认: 3）
+                        预留参数，当前顺序下载
   -v, --verbose         启用详细日志
   --version             显示程序版本号并退出
 ```

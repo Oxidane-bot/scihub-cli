@@ -6,6 +6,7 @@ from typing import Optional
 
 import requests
 
+from ..config.settings import settings
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -18,7 +19,8 @@ class YearDetector:
         self.base_url = "https://api.crossref.org/works"
         self.cache: dict[str, Optional[int]] = {}
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "scihub-cli/1.0 (mailto:user@example.com)"})
+        contact_email = settings.email or "scihub-cli@example.invalid"
+        self.session.headers.update({"User-Agent": f"scihub-cli/1.0 (mailto:{contact_email})"})
 
     def get_year(self, doi: str) -> Optional[int]:
         """
