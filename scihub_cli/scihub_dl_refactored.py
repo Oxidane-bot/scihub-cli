@@ -53,7 +53,10 @@ def check_email_config():
 
 def main():
     """Main entry point for the script."""
-    parser = argparse.ArgumentParser(description='Download academic papers from Sci-Hub in batch mode.')
+    parser = argparse.ArgumentParser(
+        description='Multi-source academic paper downloader.',
+        epilog='v0.2.0 - Sources: Sci-Hub, Unpaywall, CORE | Features: intelligent routing, parallel downloads'
+    )
 
     parser.add_argument('input_file', help='Text file containing DOIs or URLs (one per line)')
     parser.add_argument('-o', '--output', default=settings.output_dir,
@@ -68,7 +71,8 @@ def main():
     parser.add_argument('--email', help='Email for Unpaywall API (saves to config file)')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Enable verbose logging')
-    parser.add_argument('--version', action='version', version='Sci-Hub Downloader 0.2.0')
+    parser.add_argument('--version', action='version',
+                        version='scihub-cli v0.2.0')
 
     args = parser.parse_args()
 

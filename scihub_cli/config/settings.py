@@ -47,6 +47,9 @@ class Settings:
         from .user_config import user_config
         self.email = os.getenv('SCIHUB_CLI_EMAIL') or user_config.get_email()
 
+        # CORE API key (optional, improves rate limits)
+        self.core_api_key = os.getenv('CORE_API_KEY') or user_config.get_core_api_key()
+
         # Logging configuration
         user_home = str(Path.home())
         self.log_dir = os.path.join(user_home, '.scihub-cli', 'logs')

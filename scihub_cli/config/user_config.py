@@ -84,6 +84,14 @@ class UserConfig:
         """Set email in config file."""
         self.set('email', email)
 
+    def get_core_api_key(self) -> Optional[str]:
+        """Get CORE API key from config file."""
+        return self.get('core_api_key')
+
+    def set_core_api_key(self, api_key: str):
+        """Set CORE API key in config file."""
+        self.set('core_api_key', api_key)
+
     def exists(self) -> bool:
         """Check if config file exists."""
         return self.config_file.exists()

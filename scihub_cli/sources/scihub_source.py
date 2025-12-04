@@ -54,7 +54,7 @@ class SciHubSource(PaperSource):
             PDF URL if found, None otherwise
         """
         try:
-            # Get working mirror
+            # Get working mirror (uses cache if available)
             mirror = self.mirror_manager.get_working_mirror()
 
             # Format DOI for Sci-Hub URL if it's a DOI
@@ -75,9 +75,13 @@ class SciHubSource(PaperSource):
                     html_content, status_code = self.downloader.get_page_content(fallback_url)
                     if not html_content or status_code != 200:
                         logger.warning(f"[Sci-Hub] Failed to access page: {status_code}")
+                        # Invalidate mirror cache on failure
+                        self.mirror_manager.invalidate_cache()
                         return None
                 else:
                     logger.warning(f"[Sci-Hub] Failed to access page: {status_code}")
+                    # Invalidate mirror cache on failure
+                    self.mirror_manager.invalidate_cache()
                     return None
 
             # Extract the download URL
@@ -100,4 +104,6 @@ class SciHubSource(PaperSource):
 
         except Exception as e:
             logger.warning(f"[Sci-Hub] Error getting PDF URL for {doi}: {e}")
+            # Invalidate mirror cache on exception
+            self.mirror_manager.invalidate_cache()
             return None

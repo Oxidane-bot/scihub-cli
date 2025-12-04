@@ -40,8 +40,11 @@ sci-hub-page.html
 *.log
 prd.md
 
-# 不要忽略clean.py脚本
-!clean.py
+# 测试文件和用户数据
+dois.txt
+test*.txt
+test*/
+*_test/
 
 # Claude相关文件
 CLAUDE.md
