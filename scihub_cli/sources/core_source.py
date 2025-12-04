@@ -6,12 +6,15 @@ thousands of repositories and journals worldwide.
 """
 
 import time
+from typing import Optional
+
 import requests
-from typing import Optional, Tuple
+
 from ..utils.logging import get_logger
-from ..utils.retry import RetryConfig, RetryableException, PermanentException
+from ..utils.retry import RetryConfig
 
 logger = get_logger(__name__)
+
 
 class CORESource:
     """
@@ -34,14 +37,10 @@ class CORESource:
         self.base_url = "https://api.core.ac.uk/v3"
 
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'scihub-cli/1.0 (academic research tool)'
-        })
+        self.session.headers.update({"User-Agent": "scihub-cli/1.0 (academic research tool)"})
 
         if api_key:
-            self.session.headers.update({
-                'Authorization': f'Bearer {api_key}'
-            })
+            self.session.headers.update({"Authorization": f"Bearer {api_key}"})
 
         # Metadata cache to avoid duplicate API calls
         self._metadata_cache = {}
@@ -89,22 +88,15 @@ class CORESource:
         """
         # Search by DOI
         search_url = f"{self.base_url}/search/works"
-        params = {
-            'q': f'doi:"{doi}"',
-            'limit': 1
-        }
+        params = {"q": f'doi:"{doi}"', "limit": 1}
 
         for attempt in range(self.retry_config.max_attempts):
             try:
-                response = self.session.get(
-                    search_url,
-                    params=params,
-                    timeout=self.timeout
-                )
+                response = self.session.get(search_url, params=params, timeout=self.timeout)
 
                 if response.status_code == 200:
                     data = response.json()
-                    results = data.get('results', [])
+                    results = data.get("results", [])
 
                     if not results:
                         logger.debug(f"[CORE] No results found for {doi}")
@@ -113,24 +105,24 @@ class CORESource:
                     work = results[0]
 
                     # Check if full text is available
-                    has_fulltext = work.get('fullText') or work.get('downloadUrl')
+                    has_fulltext = work.get("fullText") or work.get("downloadUrl")
 
                     if not has_fulltext:
                         logger.debug(f"[CORE] No full text available for {doi}")
                         return None
 
                     return {
-                        'title': work.get('title', ''),
-                        'year': str(work.get('yearPublished', '')),
-                        'is_oa': True,  # CORE only has OA content
-                        'pdf_url': work.get('downloadUrl'),
-                        'core_id': work.get('id'),
-                        'source': 'CORE'
+                        "title": work.get("title", ""),
+                        "year": str(work.get("yearPublished", "")),
+                        "is_oa": True,  # CORE only has OA content
+                        "pdf_url": work.get("downloadUrl"),
+                        "core_id": work.get("id"),
+                        "source": "CORE",
                     }
 
                 elif response.status_code == 429:
                     # Rate limit exceeded
-                    retry_after = int(response.headers.get('Retry-After', 10))
+                    retry_after = int(response.headers.get("Retry-After", 10))
                     logger.warning(f"[CORE] Rate limit exceeded, waiting {retry_after}s")
                     if attempt < self.retry_config.max_attempts - 1:
                         time.sleep(retry_after)
@@ -174,7 +166,7 @@ class CORESource:
             logger.debug(f"[CORE] No metadata found for {doi}")
             return None
 
-        pdf_url = metadata.get('pdf_url')
+        pdf_url = metadata.get("pdf_url")
 
         if pdf_url:
             logger.info(f"[CORE] Found PDF for {doi}")
@@ -184,7 +176,7 @@ class CORESource:
             logger.debug(f"[CORE] No PDF URL available for {doi}")
             return None
 
-    def get_pdf_url_with_metadata(self, doi: str) -> Tuple[Optional[str], Optional[dict]]:
+    def get_pdf_url_with_metadata(self, doi: str) -> tuple[Optional[str], Optional[dict]]:
         """
         Get both PDF URL and metadata in one call.
 
@@ -199,5 +191,5 @@ class CORESource:
         if not metadata:
             return None, None
 
-        pdf_url = metadata.get('pdf_url')
+        pdf_url = metadata.get("pdf_url")
         return pdf_url, metadata

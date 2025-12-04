@@ -11,5 +11,5 @@ from .client import SciHubClient
 
 # Export commonly used classes and functions
 __all__ = [
-    'SciHubClient',
-] 
+    "SciHubClient",
+]

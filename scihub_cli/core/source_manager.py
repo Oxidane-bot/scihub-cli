@@ -2,10 +2,11 @@
 Multi-source manager with intelligent routing.
 """
 
-from typing import List, Optional, Dict, Tuple
+from typing import Optional
+
 from ..sources.base import PaperSource
-from .year_detector import YearDetector
 from ..utils.logging import get_logger
+from .year_detector import YearDetector
 
 logger = get_logger(__name__)
 
@@ -13,10 +14,12 @@ logger = get_logger(__name__)
 class SourceManager:
     """Manages multiple paper sources with intelligent routing based on publication year."""
 
-    def __init__(self,
-                 sources: List[PaperSource],
-                 year_threshold: int = 2021,
-                 enable_year_routing: bool = True):
+    def __init__(
+        self,
+        sources: list[PaperSource],
+        year_threshold: int = 2021,
+        enable_year_routing: bool = True,
+    ):
         """
         Initialize source manager.
 
@@ -30,7 +33,7 @@ class SourceManager:
         self.enable_year_routing = enable_year_routing
         self.year_detector = YearDetector() if enable_year_routing else None
 
-    def get_source_chain(self, doi: str, year: Optional[int] = None) -> List[PaperSource]:
+    def get_source_chain(self, doi: str, year: Optional[int] = None) -> list[PaperSource]:
         """
         Get the optimal source chain for a given DOI based on publication year.
 
@@ -53,22 +56,28 @@ class SourceManager:
         # Build source chain based on year
         if year is None:
             # Unknown year: conservative strategy (OA first)
-            logger.info(f"[Router] Year unknown for {doi}, using conservative strategy: Unpaywall -> CORE -> Sci-Hub")
+            logger.info(
+                f"[Router] Year unknown for {doi}, using conservative strategy: Unpaywall -> CORE -> Sci-Hub"
+            )
             chain = self._build_chain(["Unpaywall", "CORE", "Sci-Hub"])
 
         elif year < self.year_threshold:
             # Old papers: Sci-Hub has excellent coverage
-            logger.info(f"[Router] Year {year} < {self.year_threshold}, using Sci-Hub -> Unpaywall -> CORE")
+            logger.info(
+                f"[Router] Year {year} < {self.year_threshold}, using Sci-Hub -> Unpaywall -> CORE"
+            )
             chain = self._build_chain(["Sci-Hub", "Unpaywall", "CORE"])
 
         else:
             # New papers: Sci-Hub has zero coverage, OA first
-            logger.info(f"[Router] Year {year} >= {self.year_threshold}, using Unpaywall -> CORE -> Sci-Hub")
+            logger.info(
+                f"[Router] Year {year} >= {self.year_threshold}, using Unpaywall -> CORE -> Sci-Hub"
+            )
             chain = self._build_chain(["Unpaywall", "CORE", "Sci-Hub"])
 
         return chain
 
-    def _build_chain(self, source_names: List[str]) -> List[PaperSource]:
+    def _build_chain(self, source_names: list[str]) -> list[PaperSource]:
         """
         Build a source chain from source names.
 
@@ -115,7 +124,9 @@ class SourceManager:
         logger.warning(f"[Router] All sources failed for {doi}")
         return None
 
-    def get_pdf_url_with_metadata(self, doi: str, year: Optional[int] = None) -> Tuple[Optional[str], Optional[Dict]]:
+    def get_pdf_url_with_metadata(
+        self, doi: str, year: Optional[int] = None
+    ) -> tuple[Optional[str], Optional[dict]]:
         """
         Get PDF URL and metadata in one pass (avoids duplicate API calls).
 
@@ -137,7 +148,7 @@ class SourceManager:
 
                     # Get metadata from same source (will use cache if available)
                     metadata = None
-                    if hasattr(source, 'get_metadata'):
+                    if hasattr(source, "get_metadata"):
                         try:
                             metadata = source.get_metadata(doi)
                         except Exception as e:

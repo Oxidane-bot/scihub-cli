@@ -3,12 +3,13 @@ Sci-Hub source implementation.
 """
 
 from typing import Optional
-from .base import PaperSource
-from ..core.mirror_manager import MirrorManager
-from ..core.parser import ContentParser
+
 from ..core.doi_processor import DOIProcessor
 from ..core.downloader import FileDownloader
+from ..core.mirror_manager import MirrorManager
+from ..core.parser import ContentParser
 from ..utils.logging import get_logger
+from .base import PaperSource
 
 logger = get_logger(__name__)
 
@@ -16,11 +17,13 @@ logger = get_logger(__name__)
 class SciHubSource(PaperSource):
     """Sci-Hub paper source."""
 
-    def __init__(self,
-                 mirror_manager: MirrorManager,
-                 parser: ContentParser,
-                 doi_processor: DOIProcessor,
-                 downloader: FileDownloader):
+    def __init__(
+        self,
+        mirror_manager: MirrorManager,
+        parser: ContentParser,
+        doi_processor: DOIProcessor,
+        downloader: FileDownloader,
+    ):
         """
         Initialize Sci-Hub source.
 
@@ -58,8 +61,9 @@ class SciHubSource(PaperSource):
             mirror = self.mirror_manager.get_working_mirror()
 
             # Format DOI for Sci-Hub URL if it's a DOI
-            formatted_doi = (self.doi_processor.format_doi_for_url(doi)
-                            if doi.startswith('10.') else doi)
+            formatted_doi = (
+                self.doi_processor.format_doi_for_url(doi) if doi.startswith("10.") else doi
+            )
 
             # Construct Sci-Hub URL
             scihub_url = f"{mirror}/{formatted_doi}"
@@ -69,7 +73,7 @@ class SciHubSource(PaperSource):
             html_content, status_code = self.downloader.get_page_content(scihub_url)
             if not html_content or status_code != 200:
                 # Try fallback with original DOI format
-                if doi.startswith('10.'):
+                if doi.startswith("10."):
                     fallback_url = f"{mirror}/{doi}"
                     logger.debug(f"[Sci-Hub] Trying fallback: {fallback_url}")
                     html_content, status_code = self.downloader.get_page_content(fallback_url)
@@ -86,14 +90,13 @@ class SciHubSource(PaperSource):
 
             # Extract the download URL
             download_url = self.parser.extract_download_url(html_content, mirror)
-            if not download_url:
+            if not download_url and doi.startswith("10."):
                 # Try fallback with original DOI format if extraction failed
-                if doi.startswith('10.'):
-                    fallback_url = f"{mirror}/{doi}"
-                    logger.debug(f"[Sci-Hub] Extraction failed, trying fallback: {fallback_url}")
-                    html_content, status_code = self.downloader.get_page_content(fallback_url)
-                    if html_content and status_code == 200:
-                        download_url = self.parser.extract_download_url(html_content, mirror)
+                fallback_url = f"{mirror}/{doi}"
+                logger.debug(f"[Sci-Hub] Extraction failed, trying fallback: {fallback_url}")
+                html_content, status_code = self.downloader.get_page_content(fallback_url)
+                if html_content and status_code == 200:
+                    download_url = self.parser.extract_download_url(html_content, mirror)
 
             if download_url:
                 logger.debug(f"[Sci-Hub] Found PDF URL: {download_url}")

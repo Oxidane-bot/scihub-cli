@@ -2,11 +2,18 @@
 Unpaywall source implementation.
 """
 
+from typing import Any, Optional
+
 import requests
-from typing import Optional, Dict, Any
-from .base import PaperSource
+
 from ..utils.logging import get_logger
-from ..utils.retry import APIRetryConfig, RetryableException, PermanentException, retry_with_classification
+from ..utils.retry import (
+    APIRetryConfig,
+    PermanentError,
+    RetryableError,
+    retry_with_classification,
+)
+from .base import PaperSource
 
 logger = get_logger(__name__)
 
@@ -26,12 +33,10 @@ class UnpaywallSource(PaperSource):
         self.timeout = timeout
         self.base_url = "https://api.unpaywall.org/v2"
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': f'scihub-cli/1.0 (mailto:{email})'
-        })
+        self.session.headers.update({"User-Agent": f"scihub-cli/1.0 (mailto:{email})"})
 
         # Metadata caching
-        self._metadata_cache: Dict[str, Optional[Dict]] = {}
+        self._metadata_cache: dict[str, Optional[dict]] = {}
 
         # Retry configuration for API calls
         self.retry_config = APIRetryConfig()
@@ -42,7 +47,7 @@ class UnpaywallSource(PaperSource):
 
     def can_handle(self, doi: str) -> bool:
         """Unpaywall can query any DOI, but only returns OA articles."""
-        return doi.startswith('10.')
+        return doi.startswith("10.")
 
     def get_pdf_url(self, doi: str) -> Optional[str]:
         """
@@ -74,7 +79,7 @@ class UnpaywallSource(PaperSource):
             logger.warning(f"[Unpaywall] No PDF URL in OA location for {doi}")
             return None
 
-    def get_metadata(self, doi: str) -> Optional[Dict[str, Any]]:
+    def get_metadata(self, doi: str) -> Optional[dict[str, Any]]:
         """
         Get metadata from Unpaywall (returns cached if available).
 
@@ -87,7 +92,7 @@ class UnpaywallSource(PaperSource):
         """
         return self._fetch_metadata(doi)
 
-    def _fetch_metadata(self, doi: str) -> Optional[Dict[str, str]]:
+    def _fetch_metadata(self, doi: str) -> Optional[dict[str, str]]:
         """
         Fetch and cache metadata from Unpaywall API.
 
@@ -110,14 +115,12 @@ class UnpaywallSource(PaperSource):
 
         try:
             metadata = retry_with_classification(
-                _attempt_fetch,
-                self.retry_config,
-                f"Unpaywall API for {doi}"
+                _attempt_fetch, self.retry_config, f"Unpaywall API for {doi}"
             )
             # Cache result (even if None)
             self._metadata_cache[doi] = metadata
             return metadata
-        except PermanentException:
+        except PermanentError:
             # Cache permanent failures too
             self._metadata_cache[doi] = None
             return None
@@ -125,7 +128,7 @@ class UnpaywallSource(PaperSource):
             # Don't cache transient failures that exhausted retries
             return None
 
-    def _fetch_from_api(self, doi: str) -> Optional[Dict[str, str]]:
+    def _fetch_from_api(self, doi: str) -> Optional[dict[str, str]]:
         """
         Single API fetch attempt with error classification.
 
@@ -136,8 +139,8 @@ class UnpaywallSource(PaperSource):
             Dictionary with metadata
 
         Raises:
-            PermanentException: For 404 or not open access
-            RetryableException: For timeouts, rate limits, server errors
+            PermanentError: For 404 or not open access
+            RetryableError: For timeouts, rate limits, server errors
         """
         try:
             url = f"{self.base_url}/{doi}"
@@ -161,7 +164,9 @@ class UnpaywallSource(PaperSource):
                         logger.debug(f"[Unpaywall] Using validated fallback URL: {fallback_url}")
                         pdf_url = fallback_url
                     else:
-                        logger.debug(f"[Unpaywall] Only landing page available, no direct PDF: {fallback_url}")
+                        logger.debug(
+                            f"[Unpaywall] Only landing page available, no direct PDF: {fallback_url}"
+                        )
                         # pdf_url remains None
 
                 # Keep year as int for proper comparison with thresholds
@@ -172,36 +177,36 @@ class UnpaywallSource(PaperSource):
                     "journal": data.get("journal_name", ""),
                     "is_oa": data.get("is_oa", False),
                     "oa_status": data.get("oa_status", ""),
-                    "pdf_url": pdf_url
+                    "pdf_url": pdf_url,
                 }
 
             elif response.status_code == 404:
                 logger.debug(f"[Unpaywall] DOI not found: {doi}")
-                raise PermanentException("DOI not found")
+                raise PermanentError("DOI not found")
 
             elif response.status_code == 429:
                 logger.warning(f"[Unpaywall] Rate limited for {doi}")
-                raise RetryableException("Rate limited")
+                raise RetryableError("Rate limited")
 
             elif response.status_code >= 500:
                 logger.warning(f"[Unpaywall] Server error {response.status_code} for {doi}")
-                raise RetryableException(f"Server error {response.status_code}")
+                raise RetryableError(f"Server error {response.status_code}")
 
             else:
                 logger.warning(f"[Unpaywall] API returned {response.status_code} for {doi}")
-                raise PermanentException(f"Unexpected status {response.status_code}")
+                raise PermanentError(f"Unexpected status {response.status_code}")
 
-        except requests.Timeout:
+        except requests.Timeout as e:
             logger.warning(f"[Unpaywall] Request timeout for {doi}")
-            raise RetryableException("Request timeout")
+            raise RetryableError("Request timeout") from e
 
         except requests.RequestException as e:
             logger.warning(f"[Unpaywall] Request error for {doi}: {e}")
-            raise RetryableException(f"Request error: {e}")
+            raise RetryableError(f"Request error: {e}") from e
 
         except (KeyError, ValueError) as e:
             logger.warning(f"[Unpaywall] Error parsing response for {doi}: {e}")
-            raise PermanentException(f"Parse error: {e}")
+            raise PermanentError(f"Parse error: {e}") from e
 
     def _looks_like_pdf_url(self, url: str) -> bool:
         """
@@ -219,18 +224,18 @@ class UnpaywallSource(PaperSource):
         url_lower = url.lower()
 
         # Direct PDF file URLs
-        if url_lower.endswith('.pdf'):
+        if url_lower.endswith(".pdf"):
             return True
 
         # Reject known landing page patterns
         landing_patterns = [
-            '/doi.org/',      # DOI redirects
-            '/abstract',      # Abstract pages
-            '/article/',      # Article landing pages
-            '/stable/',       # JSTOR landing
-            'ecuworks',       # ECU institutional repo
-            '/pure/',         # Research portals
-            'researchgate',   # ResearchGate profiles
+            "/doi.org/",  # DOI redirects
+            "/abstract",  # Abstract pages
+            "/article/",  # Article landing pages
+            "/stable/",  # JSTOR landing
+            "ecuworks",  # ECU institutional repo
+            "/pure/",  # Research portals
+            "researchgate",  # ResearchGate profiles
         ]
 
         for pattern in landing_patterns:
@@ -240,17 +245,12 @@ class UnpaywallSource(PaperSource):
 
         # Accept known PDF serving patterns
         pdf_patterns = [
-            '/pdf',
-            'download',
-            'content/pdf',
-            '/article-pdf/',
-            '/pdfviewer/',
-            'viewer/pdf',
+            "/pdf",
+            "download",
+            "content/pdf",
+            "/article-pdf/",
+            "/pdfviewer/",
+            "viewer/pdf",
         ]
 
-        for pattern in pdf_patterns:
-            if pattern in url_lower:
-                return True
-
-        # Default: reject if uncertain (conservative approach)
-        return False
+        return any(pattern in url_lower for pattern in pdf_patterns)

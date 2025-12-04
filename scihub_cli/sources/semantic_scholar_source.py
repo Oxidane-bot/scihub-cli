@@ -6,12 +6,15 @@ direct links to open access PDFs when available.
 """
 
 import time
+from typing import Optional
+
 import requests
-from typing import Optional, Tuple
+
 from ..utils.logging import get_logger
 from ..utils.retry import RetryConfig
 
 logger = get_logger(__name__)
+
 
 class SemanticScholarSource:
     """
@@ -34,14 +37,10 @@ class SemanticScholarSource:
         self.base_url = "https://api.semanticscholar.org/graph/v1"
 
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'scihub-cli/1.0 (academic research tool)'
-        })
+        self.session.headers.update({"User-Agent": "scihub-cli/1.0 (academic research tool)"})
 
         if api_key:
-            self.session.headers.update({
-                'x-api-key': api_key
-            })
+            self.session.headers.update({"x-api-key": api_key})
 
         # Metadata cache to avoid duplicate API calls
         self._metadata_cache = {}
@@ -89,50 +88,44 @@ class SemanticScholarSource:
         """
         # Query by DOI
         paper_url = f"{self.base_url}/paper/DOI:{doi}"
-        params = {
-            'fields': 'title,year,isOpenAccess,openAccessPdf'
-        }
+        params = {"fields": "title,year,isOpenAccess,openAccessPdf"}
 
         for attempt in range(self.retry_config.max_attempts):
             try:
-                response = self.session.get(
-                    paper_url,
-                    params=params,
-                    timeout=self.timeout
-                )
+                response = self.session.get(paper_url, params=params, timeout=self.timeout)
 
                 if response.status_code == 200:
                     data = response.json()
 
                     # Check if open access
-                    is_oa = data.get('isOpenAccess', False)
+                    is_oa = data.get("isOpenAccess", False)
 
                     if not is_oa:
                         logger.debug(f"[S2] Paper not open access: {doi}")
                         return None
 
                     # Get PDF URL
-                    open_access_pdf = data.get('openAccessPdf')
+                    open_access_pdf = data.get("openAccessPdf")
                     pdf_url = None
 
                     if open_access_pdf:
-                        pdf_url = open_access_pdf.get('url')
+                        pdf_url = open_access_pdf.get("url")
 
                     if not pdf_url:
                         logger.debug(f"[S2] No PDF URL available for {doi}")
                         return None
 
                     return {
-                        'title': data.get('title', ''),
-                        'year': str(data.get('year', '')),
-                        'is_oa': True,
-                        'pdf_url': pdf_url,
-                        'source': 'Semantic Scholar'
+                        "title": data.get("title", ""),
+                        "year": str(data.get("year", "")),
+                        "is_oa": True,
+                        "pdf_url": pdf_url,
+                        "source": "Semantic Scholar",
                     }
 
                 elif response.status_code == 429:
                     # Rate limit exceeded
-                    retry_after = int(response.headers.get('Retry-After', 10))
+                    retry_after = int(response.headers.get("Retry-After", 10))
                     logger.warning(f"[S2] Rate limit exceeded, waiting {retry_after}s")
                     if attempt < self.retry_config.max_attempts - 1:
                         time.sleep(retry_after)
@@ -176,7 +169,7 @@ class SemanticScholarSource:
             logger.debug(f"[S2] No metadata found for {doi}")
             return None
 
-        pdf_url = metadata.get('pdf_url')
+        pdf_url = metadata.get("pdf_url")
 
         if pdf_url:
             logger.info(f"[S2] Found PDF for {doi}")
@@ -186,7 +179,7 @@ class SemanticScholarSource:
             logger.debug(f"[S2] No PDF URL available for {doi}")
             return None
 
-    def get_pdf_url_with_metadata(self, doi: str) -> Tuple[Optional[str], Optional[dict]]:
+    def get_pdf_url_with_metadata(self, doi: str) -> tuple[Optional[str], Optional[dict]]:
         """
         Get both PDF URL and metadata in one call.
 
@@ -201,5 +194,5 @@ class SemanticScholarSource:
         if not metadata:
             return None, None
 
-        pdf_url = metadata.get('pdf_url')
+        pdf_url = metadata.get("pdf_url")
         return pdf_url, metadata

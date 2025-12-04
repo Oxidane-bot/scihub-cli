@@ -3,26 +3,29 @@ Mirror management and selection logic.
 """
 
 import time
+from typing import Optional
+
 import requests
-from typing import List, Optional
+
 from ..config.mirrors import MirrorConfig
 from ..config.settings import settings
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+
 class MirrorManager:
     """Manages mirror selection and testing."""
 
-    def __init__(self,
-                 mirrors: Optional[List[str]] = None,
-                 timeout: int = None):
+    def __init__(self, mirrors: Optional[list[str]] = None, timeout: int = None):
         self.mirrors = mirrors or MirrorConfig.get_all_mirrors()
         self.timeout = timeout or settings.timeout
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+        )
 
         # Mirror caching
         self._cached_mirror: Optional[str] = None
@@ -32,7 +35,7 @@ class MirrorManager:
         # Failed mirror blacklist (mirror_url -> failure_time)
         self._failed_mirrors: dict[str, float] = {}
         self._blacklist_duration: int = 300  # 5 minutes cooldown
-    
+
     def get_working_mirror(self, force_refresh: bool = False) -> str:
         """
         Get a working mirror using tiered strategy with caching.
@@ -89,7 +92,9 @@ class MirrorManager:
             logger.debug(f"Blacklist expired for {mirror}")
             return False
 
-        logger.debug(f"Skipping blacklisted mirror {mirror} ({int(self._blacklist_duration - elapsed)}s remaining)")
+        logger.debug(
+            f"Skipping blacklisted mirror {mirror} ({int(self._blacklist_duration - elapsed)}s remaining)"
+        )
         return True
 
     def _find_working_mirror(self) -> str:
@@ -115,7 +120,7 @@ class MirrorManager:
                 return mirror
 
         raise Exception("All mirrors are unavailable")
-    
+
     def _test_mirror(self, mirror: str, allow_403: bool = False) -> bool:
         """Test if a mirror is accessible."""
         try:
@@ -123,7 +128,9 @@ class MirrorManager:
             if response.status_code == 200:
                 return True
             elif response.status_code == 403 and allow_403:
-                logger.warning(f"PROTECTED: {mirror} is 403 protected, but might work for downloads")
+                logger.warning(
+                    f"PROTECTED: {mirror} is 403 protected, but might work for downloads"
+                )
                 return True
             else:
                 logger.debug(f"FAIL: {mirror} returned {response.status_code}")
@@ -131,8 +138,8 @@ class MirrorManager:
         except requests.RequestException as e:
             logger.debug(f"FAIL: {mirror} failed: {e}")
             return False
-    
-    def test_all_mirrors(self) -> List[str]:
+
+    def test_all_mirrors(self) -> list[str]:
         """Test all mirrors and return working ones."""
         working_mirrors = []
         for mirror in self.mirrors:

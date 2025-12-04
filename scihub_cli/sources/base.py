@@ -3,7 +3,7 @@ Abstract base class for paper sources.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict
+from typing import Optional
 
 
 class PaperSource(ABC):
@@ -41,7 +41,7 @@ class PaperSource(ABC):
         """
         pass
 
-    def get_metadata(self, doi: str) -> Optional[Dict[str, str]]:
+    def get_metadata(self, doi: str) -> Optional[dict[str, str]]:
         """
         Get metadata for a paper (optional, not all sources provide this).
 

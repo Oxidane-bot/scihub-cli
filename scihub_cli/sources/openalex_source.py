@@ -6,12 +6,15 @@ and comprehensive open access information.
 """
 
 import time
+from typing import Optional
+
 import requests
-from typing import Optional, Tuple
+
 from ..utils.logging import get_logger
 from ..utils.retry import RetryConfig
 
 logger = get_logger(__name__)
+
 
 class OpenAlexSource:
     """
@@ -34,9 +37,9 @@ class OpenAlexSource:
         self.base_url = "https://api.openalex.org"
 
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': f'scihub-cli/1.0 (mailto:{email})' if email else 'scihub-cli/1.0'
-        })
+        self.session.headers.update(
+            {"User-Agent": f"scihub-cli/1.0 (mailto:{email})" if email else "scihub-cli/1.0"}
+        )
 
         # Metadata cache to avoid duplicate API calls
         self._metadata_cache = {}
@@ -87,17 +90,14 @@ class OpenAlexSource:
 
         for attempt in range(self.retry_config.max_attempts):
             try:
-                response = self.session.get(
-                    work_url,
-                    timeout=self.timeout
-                )
+                response = self.session.get(work_url, timeout=self.timeout)
 
                 if response.status_code == 200:
                     data = response.json()
 
                     # Check if open access
-                    open_access = data.get('open_access', {})
-                    is_oa = open_access.get('is_oa', False)
+                    open_access = data.get("open_access", {})
+                    is_oa = open_access.get("is_oa", False)
 
                     if not is_oa:
                         logger.debug(f"[OpenAlex] Paper not open access: {doi}")
@@ -111,18 +111,18 @@ class OpenAlexSource:
                         return None
 
                     return {
-                        'title': data.get('title', ''),
-                        'year': str(data.get('publication_year', '')),
-                        'is_oa': True,
-                        'oa_status': open_access.get('oa_status', ''),
-                        'pdf_url': pdf_url,
-                        'openalex_id': data.get('id'),
-                        'source': 'OpenAlex'
+                        "title": data.get("title", ""),
+                        "year": str(data.get("publication_year", "")),
+                        "is_oa": True,
+                        "oa_status": open_access.get("oa_status", ""),
+                        "pdf_url": pdf_url,
+                        "openalex_id": data.get("id"),
+                        "source": "OpenAlex",
                     }
 
                 elif response.status_code == 429:
                     # Rate limit exceeded
-                    retry_after = int(response.headers.get('Retry-After', 10))
+                    retry_after = int(response.headers.get("Retry-After", 10))
                     logger.warning(f"[OpenAlex] Rate limit exceeded, waiting {retry_after}s")
                     if attempt < self.retry_config.max_attempts - 1:
                         time.sleep(retry_after)
@@ -166,25 +166,25 @@ class OpenAlexSource:
             PDF URL or None
         """
         # Strategy 1: Use oa_url if available
-        open_access = data.get('open_access', {})
-        oa_url = open_access.get('oa_url')
+        open_access = data.get("open_access", {})
+        oa_url = open_access.get("oa_url")
         if oa_url and self._looks_like_pdf_url(oa_url):
             logger.debug(f"[OpenAlex] Using oa_url: {oa_url}")
             return oa_url
 
         # Strategy 2: Check primary location
-        primary_location = data.get('primary_location', {})
+        primary_location = data.get("primary_location", {})
         if primary_location:
-            pdf_url = primary_location.get('pdf_url')
+            pdf_url = primary_location.get("pdf_url")
             if pdf_url:
                 logger.debug(f"[OpenAlex] Using primary_location pdf_url: {pdf_url}")
                 return pdf_url
 
         # Strategy 3: Check all locations
-        locations = data.get('locations', [])
+        locations = data.get("locations", [])
         for location in locations:
-            if location.get('is_oa'):
-                pdf_url = location.get('pdf_url')
+            if location.get("is_oa"):
+                pdf_url = location.get("pdf_url")
                 if pdf_url:
                     logger.debug(f"[OpenAlex] Using location pdf_url: {pdf_url}")
                     return pdf_url
@@ -207,23 +207,19 @@ class OpenAlexSource:
         url_lower = url.lower()
 
         # Direct PDF file URLs
-        if url_lower.endswith('.pdf'):
+        if url_lower.endswith(".pdf"):
             return True
 
         # Known PDF serving patterns
         pdf_patterns = [
-            '/pdf',
-            'download',
-            'content/pdf',
-            '/article-pdf/',
-            '/pdfviewer/',
+            "/pdf",
+            "download",
+            "content/pdf",
+            "/article-pdf/",
+            "/pdfviewer/",
         ]
 
-        for pattern in pdf_patterns:
-            if pattern in url_lower:
-                return True
-
-        return False
+        return any(pattern in url_lower for pattern in pdf_patterns)
 
     def get_pdf_url(self, doi: str) -> Optional[str]:
         """
@@ -241,7 +237,7 @@ class OpenAlexSource:
             logger.debug(f"[OpenAlex] No metadata found for {doi}")
             return None
 
-        pdf_url = metadata.get('pdf_url')
+        pdf_url = metadata.get("pdf_url")
 
         if pdf_url:
             logger.info(f"[OpenAlex] Found PDF for {doi}")
@@ -251,7 +247,7 @@ class OpenAlexSource:
             logger.debug(f"[OpenAlex] No PDF URL available for {doi}")
             return None
 
-    def get_pdf_url_with_metadata(self, doi: str) -> Tuple[Optional[str], Optional[dict]]:
+    def get_pdf_url_with_metadata(self, doi: str) -> tuple[Optional[str], Optional[dict]]:
         """
         Get both PDF URL and metadata in one call.
 
@@ -266,5 +262,5 @@ class OpenAlexSource:
         if not metadata:
             return None, None
 
-        pdf_url = metadata.get('pdf_url')
+        pdf_url = metadata.get("pdf_url")
         return pdf_url, metadata

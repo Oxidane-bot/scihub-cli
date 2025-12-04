@@ -2,15 +2,23 @@
 Core downloader implementation with single responsibility.
 """
 
-import requests
 import time
-from typing import Optional, Tuple
+from typing import Optional
+
+import requests
+
 from ..config.settings import settings
 from ..network.session import BasicSession
 from ..utils.logging import get_logger
-from ..utils.retry import DownloadRetryConfig, RetryableException, PermanentException, retry_with_classification
+from ..utils.retry import (
+    DownloadRetryConfig,
+    PermanentError,
+    RetryableError,
+    retry_with_classification,
+)
 
 logger = get_logger(__name__)
+
 
 class FileDownloader:
     """Handles pure file downloading operations."""
@@ -25,8 +33,8 @@ class FileDownloader:
         # Rate limiting for curl_cffi bypass (per-domain)
         self._last_bypass_time = {}  # domain -> timestamp
         self._bypass_delay = 2.0  # seconds between bypass requests to same domain
-    
-    def download_file(self, url: str, output_path: str) -> Tuple[bool, Optional[str]]:
+
+    def download_file(self, url: str, output_path: str) -> tuple[bool, Optional[str]]:
         """
         Download a file from URL to output path with automatic retry.
 
@@ -44,15 +52,13 @@ class FileDownloader:
 
         try:
             return retry_with_classification(
-                _attempt_download,
-                self.retry_config,
-                f"download from {url}"
+                _attempt_download, self.retry_config, f"download from {url}"
             )
-        except PermanentException as e:
+        except PermanentError as e:
             # Check if it's a 403 error - might be CDN protection
             error_msg = str(e)
-            if '403' in error_msg:
-                logger.warning(f"Got 403 error, attempting curl_cffi bypass...")
+            if "403" in error_msg:
+                logger.warning("Got 403 error, attempting curl_cffi bypass...")
                 success, bypass_error = self._download_with_curl_cffi(url, output_path)
                 if success:
                     logger.info("Successfully downloaded using curl_cffi bypass")
@@ -69,82 +75,86 @@ class FileDownloader:
             logger.error(f"Download failed after all retries: {error_msg}")
             return False, error_msg
 
-    def _download_once(self, url: str, output_path: str) -> Tuple[bool, Optional[str]]:
+    def _download_once(self, url: str, output_path: str) -> tuple[bool, Optional[str]]:
         """
         Single download attempt with error classification.
 
         Raises:
-            PermanentException: For 404, 403, invalid PDF content
-            RetryableException: For timeouts, 5xx errors, connection issues
+            PermanentError: For 404, 403, invalid PDF content
+            RetryableError: For timeouts, 5xx errors, connection issues
         """
-        import tempfile
         import os
         import shutil
+        import tempfile
 
         try:
             response = self.session.get(url, timeout=self.timeout, stream=True)
 
             # Classify HTTP errors
             if response.status_code == 404:
-                raise PermanentException("File not found (404)")
+                raise PermanentError("File not found (404)")
             elif response.status_code == 403:
-                raise PermanentException("Access denied (403)")
+                raise PermanentError("Access denied (403)")
             elif response.status_code >= 500:
-                raise RetryableException(f"Server error ({response.status_code})")
+                raise RetryableError(f"Server error ({response.status_code})")
             elif response.status_code != 200:
-                raise PermanentException(f"HTTP {response.status_code}")
+                raise PermanentError(f"HTTP {response.status_code}")
 
             # Check content type
-            content_type = response.headers.get('Content-Type', '')
-            if 'pdf' not in content_type.lower() and 'octet-stream' not in content_type.lower():
+            content_type = response.headers.get("Content-Type", "")
+            if "pdf" not in content_type.lower() and "octet-stream" not in content_type.lower():
                 logger.warning(f"Response is not a PDF: {content_type}")
                 # If it's clearly HTML, reject it (permanent)
-                if 'html' in content_type.lower():
-                    raise PermanentException(f"Server returned HTML instead of PDF (Content-Type: {content_type})")
+                if "html" in content_type.lower():
+                    raise PermanentError(
+                        f"Server returned HTML instead of PDF (Content-Type: {content_type})"
+                    )
 
             # Download to temporary location first
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.pdf')
+            temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
 
             try:
-                with os.fdopen(temp_fd, 'wb') as f:
+                with os.fdopen(temp_fd, "wb") as f:
                     for chunk in response.iter_content(chunk_size=settings.CHUNK_SIZE):
                         if chunk:
                             f.write(chunk)
 
                 # Verify it's actually a PDF by checking file header
-                with open(temp_path, 'rb') as f:
+                with open(temp_path, "rb") as f:
                     header = f.read(4)
-                    if header != b'%PDF':
+                    if header != b"%PDF":
                         os.unlink(temp_path)
-                        raise PermanentException("Downloaded file is not a valid PDF (missing PDF header)")
+                        raise PermanentError(
+                            "Downloaded file is not a valid PDF (missing PDF header)"
+                        )
 
                 # If valid, move to final destination
                 shutil.move(temp_path, output_path)
                 return True, None
 
-            except (PermanentException, RetryableException):
+            except (PermanentError, RetryableError):
                 # Clean up temp file and re-raise
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
                 raise
-            except Exception as e:
+            except Exception:
                 # Clean up temp file on other errors
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
                 raise
 
-        except requests.Timeout:
-            raise RetryableException("Download timeout")
+        except requests.Timeout as e:
+            raise RetryableError("Download timeout") from e
         except requests.ConnectionError as e:
-            raise RetryableException(f"Connection error: {e}")
-        except (PermanentException, RetryableException):
+            raise RetryableError(f"Connection error: {e}") from e
+        except (PermanentError, RetryableError):
             # Re-raise classified exceptions
             raise
         except Exception as e:
             # Unknown errors are considered retryable (conservative)
-            raise RetryableException(f"Download error: {e}")
-    
-    def _download_with_curl_cffi(self, url: str, output_path: str) -> Tuple[bool, Optional[str]]:
+            raise RetryableError(f"Download error: {e}") from e
+
+    def _download_with_curl_cffi(self, url: str, output_path: str) -> tuple[bool, Optional[str]]:
         """
         Bypass CDN protection using curl_cffi with browser impersonation.
 
@@ -165,9 +175,9 @@ class FileDownloader:
         except ImportError:
             return False, "curl_cffi not installed (pip install curl-cffi)"
 
-        import tempfile
         import os
         import shutil
+        import tempfile
         from urllib.parse import urlparse
 
         try:
@@ -184,7 +194,7 @@ class FileDownloader:
 
             # Use Chrome 110 impersonation - works well for most CDNs
             logger.debug(f"[curl_cffi] Downloading with Chrome 110 impersonation: {url}")
-            response = cf_requests.get(url, impersonate='chrome110', timeout=self.timeout)
+            response = cf_requests.get(url, impersonate="chrome110", timeout=self.timeout)
 
             # Update last request time for this domain
             self._last_bypass_time[domain] = time.time()
@@ -193,21 +203,21 @@ class FileDownloader:
                 return False, f"HTTP {response.status_code}"
 
             # Check content type
-            content_type = response.headers.get('Content-Type', '')
-            if 'html' in content_type.lower():
+            content_type = response.headers.get("Content-Type", "")
+            if "html" in content_type.lower():
                 return False, f"Server returned HTML (Content-Type: {content_type})"
 
             # Download to temporary location first
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.pdf')
+            temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
 
             try:
-                with os.fdopen(temp_fd, 'wb') as f:
+                with os.fdopen(temp_fd, "wb") as f:
                     f.write(response.content)
 
                 # Verify it's actually a PDF
-                with open(temp_path, 'rb') as f:
+                with open(temp_path, "rb") as f:
                     header = f.read(4)
-                    if header != b'%PDF':
+                    if header != b"%PDF":
                         os.unlink(temp_path)
                         return False, "Downloaded file is not a valid PDF"
 
@@ -216,7 +226,7 @@ class FileDownloader:
                 logger.debug(f"[curl_cffi] Successfully downloaded {len(response.content)} bytes")
                 return True, None
 
-            except Exception as e:
+            except Exception:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
                 raise
@@ -225,7 +235,7 @@ class FileDownloader:
             logger.debug(f"[curl_cffi] Download failed: {e}")
             return False, str(e)
 
-    def get_page_content(self, url: str) -> Tuple[Optional[str], Optional[int]]:
+    def get_page_content(self, url: str) -> tuple[Optional[str], Optional[int]]:
         """
         Get HTML content from a URL with automatic curl_cffi fallback on 403.
 
@@ -237,20 +247,20 @@ class FileDownloader:
 
             # If we get 403, try curl_cffi bypass
             if response.status_code == 403:
-                logger.warning(f"Got 403 accessing page, attempting curl_cffi bypass...")
+                logger.warning("Got 403 accessing page, attempting curl_cffi bypass...")
                 html, status = self._get_page_with_curl_cffi(url)
                 if html:
                     logger.info("Successfully fetched page using curl_cffi bypass")
                     return html, status
                 else:
-                    logger.warning(f"curl_cffi bypass also failed for page access")
+                    logger.warning("curl_cffi bypass also failed for page access")
 
             return response.text, response.status_code
         except Exception as e:
             logger.error(f"Error fetching page content: {e}")
             return None, None
 
-    def _get_page_with_curl_cffi(self, url: str) -> Tuple[Optional[str], Optional[int]]:
+    def _get_page_with_curl_cffi(self, url: str) -> tuple[Optional[str], Optional[int]]:
         """
         Fetch page content using curl_cffi with browser impersonation.
 
@@ -282,7 +292,7 @@ class FileDownloader:
 
             # Use Chrome 110 impersonation
             logger.debug(f"[curl_cffi] Fetching page with Chrome 110 impersonation: {url}")
-            response = cf_requests.get(url, impersonate='chrome110', timeout=self.timeout)
+            response = cf_requests.get(url, impersonate="chrome110", timeout=self.timeout)
 
             # Update last request time for this domain
             self._last_bypass_time[domain] = time.time()

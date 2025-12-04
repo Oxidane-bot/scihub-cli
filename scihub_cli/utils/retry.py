@@ -3,32 +3,37 @@ Retry mechanism utilities for Sci-Hub CLI.
 """
 
 import time
-from typing import Callable, Any, Optional
 from functools import wraps
+from typing import Any, Callable, Optional
+
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 # Exception types for classification
-class RetryableException(Exception):
+class RetryableError(Exception):
     """Exception that should trigger a retry."""
+
     pass
 
 
-class PermanentException(Exception):
+class PermanentError(Exception):
     """Exception that should NOT trigger a retry (permanent failure)."""
+
     pass
 
 
 class RetryConfig:
     """Configuration for retry behavior."""
 
-    def __init__(self,
-                 max_attempts: int = 3,
-                 base_delay: float = 2.0,
-                 backoff_multiplier: float = 2.0,
-                 max_delay: float = 60.0):
+    def __init__(
+        self,
+        max_attempts: int = 3,
+        base_delay: float = 2.0,
+        backoff_multiplier: float = 2.0,
+        max_delay: float = 60.0,
+    ):
         self.max_attempts = max_attempts
         self.base_delay = base_delay
         self.backoff_multiplier = backoff_multiplier
@@ -39,35 +44,27 @@ class DownloadRetryConfig(RetryConfig):
     """Specialized config for HTTP download retries."""
 
     def __init__(self):
-        super().__init__(
-            max_attempts=3,
-            base_delay=2.0,
-            backoff_multiplier=2.0,
-            max_delay=30.0
-        )
+        super().__init__(max_attempts=3, base_delay=2.0, backoff_multiplier=2.0, max_delay=30.0)
 
 
 class APIRetryConfig(RetryConfig):
     """Specialized config for API call retries."""
 
     def __init__(self):
-        super().__init__(
-            max_attempts=2,
-            base_delay=1.0,
-            backoff_multiplier=2.0,
-            max_delay=10.0
-        )
+        super().__init__(max_attempts=2, base_delay=1.0, backoff_multiplier=2.0, max_delay=10.0)
 
-def with_retry(retry_config: RetryConfig, 
-               exceptions: tuple = (Exception,),
-               logger_name: Optional[str] = None):
+
+def with_retry(
+    retry_config: RetryConfig, exceptions: tuple = (Exception,), logger_name: Optional[str] = None
+):
     """Decorator for adding retry logic to functions."""
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs) -> Any:
             last_exception = None
             retry_logger = get_logger(logger_name) if logger_name else logger
-            
+
             for attempt in range(retry_config.max_attempts):
                 try:
                     return func(*args, **kwargs)
@@ -76,8 +73,8 @@ def with_retry(retry_config: RetryConfig,
                     if attempt < retry_config.max_attempts - 1:
                         # Calculate delay with exponential backoff
                         delay = min(
-                            retry_config.base_delay * (retry_config.backoff_multiplier ** attempt),
-                            retry_config.max_delay
+                            retry_config.base_delay * (retry_config.backoff_multiplier**attempt),
+                            retry_config.max_delay,
                         )
                         retry_logger.warning(
                             f"Attempt {attempt + 1}/{retry_config.max_attempts} failed: {e}. "
@@ -88,15 +85,21 @@ def with_retry(retry_config: RetryConfig,
                         retry_logger.error(
                             f"All {retry_config.max_attempts} attempts failed. Last error: {e}"
                         )
-            
+
             raise last_exception
+
         return wrapper
+
     return decorator
 
-def retry_operation(operation: Callable,
-                   retry_config: RetryConfig,
-                   operation_name: str = "operation",
-                   *args, **kwargs) -> Any:
+
+def retry_operation(
+    operation: Callable,
+    retry_config: RetryConfig,
+    operation_name: str = "operation",
+    *args,
+    **kwargs,
+) -> Any:
     """Retry an operation with the given configuration."""
     last_exception = None
 
@@ -107,50 +110,56 @@ def retry_operation(operation: Callable,
             last_exception = e
             if attempt < retry_config.max_attempts - 1:
                 delay = min(
-                    retry_config.base_delay * (retry_config.backoff_multiplier ** attempt),
-                    retry_config.max_delay
+                    retry_config.base_delay * (retry_config.backoff_multiplier**attempt),
+                    retry_config.max_delay,
                 )
-                logger.info(f"{operation_name} failed (attempt {attempt + 1}), retrying in {delay:.1f}s...")
+                logger.info(
+                    f"{operation_name} failed (attempt {attempt + 1}), retrying in {delay:.1f}s..."
+                )
                 time.sleep(delay)
 
     logger.error(f"{operation_name} failed after {retry_config.max_attempts} attempts")
     raise last_exception
 
 
-def retry_with_classification(operation: Callable,
-                              retry_config: RetryConfig,
-                              operation_name: str = "operation") -> Any:
+def retry_with_classification(
+    operation: Callable, retry_config: RetryConfig, operation_name: str = "operation"
+) -> Any:
     """
     Retry an operation that classifies exceptions.
 
-    Only retries RetryableException. Immediately raises PermanentException.
+    Only retries RetryableError. Immediately raises PermanentError.
     """
     last_exception = None
 
     for attempt in range(retry_config.max_attempts):
         try:
             return operation()
-        except PermanentException:
+        except PermanentError:
             # Don't retry permanent failures
             raise
-        except RetryableException as e:
+        except RetryableError as e:
             last_exception = e
             if attempt < retry_config.max_attempts - 1:
                 delay = min(
-                    retry_config.base_delay * (retry_config.backoff_multiplier ** attempt),
-                    retry_config.max_delay
+                    retry_config.base_delay * (retry_config.backoff_multiplier**attempt),
+                    retry_config.max_delay,
                 )
-                logger.info(f"{operation_name} failed (attempt {attempt + 1}), retrying in {delay:.1f}s...")
+                logger.info(
+                    f"{operation_name} failed (attempt {attempt + 1}), retrying in {delay:.1f}s..."
+                )
                 time.sleep(delay)
         except Exception as e:
             # Unknown exceptions are considered retryable (conservative)
             last_exception = e
             if attempt < retry_config.max_attempts - 1:
                 delay = min(
-                    retry_config.base_delay * (retry_config.backoff_multiplier ** attempt),
-                    retry_config.max_delay
+                    retry_config.base_delay * (retry_config.backoff_multiplier**attempt),
+                    retry_config.max_delay,
                 )
-                logger.warning(f"{operation_name} failed with unknown error (attempt {attempt + 1}), retrying in {delay:.1f}s...")
+                logger.warning(
+                    f"{operation_name} failed with unknown error (attempt {attempt + 1}), retrying in {delay:.1f}s..."
+                )
                 time.sleep(delay)
 
     logger.error(f"{operation_name} failed after {retry_config.max_attempts} attempts")
@@ -165,8 +174,5 @@ def classify_http_error(status_code: int) -> bool:
         True if retryable, False if permanent
     """
     # Retryable: 408 (timeout), 429 (rate limit), 5xx (server errors)
-    if status_code in (408, 429) or status_code >= 500:
-        return True
-
     # Not retryable: 404 (not found), 403 (forbidden), other 4xx
-    return False
+    return status_code in (408, 429) or status_code >= 500
