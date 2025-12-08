@@ -1,16 +1,21 @@
 # Sci-Hub CLI
 
-A command-line tool for batch downloading academic papers with multi-source support (Sci-Hub + Unpaywall).
+A command-line tool for batch downloading academic papers with multi-source support (Sci-Hub, Unpaywall, arXiv, CORE).
 
 *Read this in other languages: [English](README.md), [简体中文](README.zh-CN.md)*
 
 ## Features
 
-- **Multi-Source Support**: Intelligently routes downloads between Sci-Hub and Unpaywall based on publication year
-  - Papers before 2021: Sci-Hub first (85%+ coverage)
-  - Papers 2021+: Unpaywall first (better coverage for recent OA papers)
+- **Multi-Source Support**: Intelligently routes downloads across multiple sources
+  - **arXiv**: Prioritized for preprints (free, no API key needed)
+  - **Unpaywall**: For open access papers (requires email)
+  - **Sci-Hub**: Comprehensive fallback (85%+ coverage)
+  - **CORE**: Additional OA fallback
+- **Smart Year-Based Routing**:
+  - Papers before 2021: Sci-Hub first (better historical coverage)
+  - Papers 2021+: Unpaywall/arXiv first (better for recent OA papers)
 - **Smart Fallback**: Automatically tries alternative sources if primary fails
-- Download papers using DOIs or URLs
+- **Flexible Input**: Download papers using DOIs, arXiv IDs, or URLs
 - Batch processing from a text file
 - Automatic mirror selection and testing
 - Customizable output directory
@@ -145,9 +150,17 @@ Where `input_file.txt` is a text file containing DOIs or paper URLs, one per lin
 
 ### Input File Format
 
+Create a text file with one identifier per line. Supports:
+- **DOIs**: `10.1038/nature12373`
+- **arXiv IDs**: `2301.12345` or `arxiv:2401.00001`
+- **URLs**: `https://doi.org/10.1126/science.abc1234`
+
+Example `papers.txt`:
 ```
 # Comments start with a hash symbol
 10.1038/s41586-020-2649-2
+2301.12345
+arxiv:2401.00001
 https://www.nature.com/articles/s41586-021-03380-y
 10.1016/s1003-6326(21)65629-7
 ```

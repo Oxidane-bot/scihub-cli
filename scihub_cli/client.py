@@ -14,6 +14,7 @@ from .core.mirror_manager import MirrorManager
 from .core.parser import ContentParser
 from .core.source_manager import SourceManager
 from .network.session import BasicSession
+from .sources.arxiv_source import ArxivSource
 from .sources.core_source import CORESource
 from .sources.scihub_source import SciHubSource
 from .sources.unpaywall_source import UnpaywallSource
@@ -24,7 +25,7 @@ logger = get_logger(__name__)
 
 
 class SciHubClient:
-    """Main client interface with multi-source support (Sci-Hub + Unpaywall)."""
+    """Main client interface with multi-source support (Sci-Hub, Unpaywall, arXiv, CORE)."""
 
     def __init__(
         self,
@@ -67,6 +68,9 @@ class SciHubClient:
                     downloader=self.downloader,
                 )
             ]
+
+            # arXiv: Free and open, always enabled (high priority for preprints)
+            sources.insert(0, ArxivSource(timeout=self.timeout))
 
             # Only enable Unpaywall when email is provided
             if self.email:
