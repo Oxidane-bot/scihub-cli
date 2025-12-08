@@ -35,20 +35,26 @@ class SourceManager:
 
     def get_source_chain(self, doi: str, year: Optional[int] = None) -> list[PaperSource]:
         """
-        Get the optimal source chain for a given DOI based on publication year.
+        Get the optimal source chain for a given identifier based on publication year.
 
         Strategy:
+        - arXiv IDs: arXiv first (direct match)
         - Papers before 2021: Sci-Hub first (high coverage), then OA sources
         - Papers 2021+: OA sources first (Sci-Hub has no coverage), then Sci-Hub
         - Unknown year: Conservative strategy (OA sources first)
 
         Args:
-            doi: The DOI to route
+            doi: The DOI or identifier to route
             year: Publication year (will be detected if not provided)
 
         Returns:
             Ordered list of sources to try
         """
+        # Check if it's an arXiv ID - prioritize arXiv source
+        if "arXiv" in self.sources and self.sources["arXiv"].can_handle(doi):
+            logger.info("[Router] Detected arXiv ID, using arXiv -> Unpaywall -> CORE -> Sci-Hub")
+            return self._build_chain(["arXiv", "Unpaywall", "CORE", "Sci-Hub"])
+
         # Detect year if not provided and routing is enabled
         if year is None and self.enable_year_routing and self.year_detector:
             year = self.year_detector.get_year(doi)
@@ -57,23 +63,23 @@ class SourceManager:
         if year is None:
             # Unknown year: conservative strategy (OA first)
             logger.info(
-                f"[Router] Year unknown for {doi}, using conservative strategy: Unpaywall -> CORE -> Sci-Hub"
+                f"[Router] Year unknown for {doi}, using conservative strategy: Unpaywall -> arXiv -> CORE -> Sci-Hub"
             )
-            chain = self._build_chain(["Unpaywall", "CORE", "Sci-Hub"])
+            chain = self._build_chain(["Unpaywall", "arXiv", "CORE", "Sci-Hub"])
 
         elif year < self.year_threshold:
             # Old papers: Sci-Hub has excellent coverage
             logger.info(
-                f"[Router] Year {year} < {self.year_threshold}, using Sci-Hub -> Unpaywall -> CORE"
+                f"[Router] Year {year} < {self.year_threshold}, using Sci-Hub -> Unpaywall -> arXiv -> CORE"
             )
-            chain = self._build_chain(["Sci-Hub", "Unpaywall", "CORE"])
+            chain = self._build_chain(["Sci-Hub", "Unpaywall", "arXiv", "CORE"])
 
         else:
             # New papers: Sci-Hub has zero coverage, OA first
             logger.info(
-                f"[Router] Year {year} >= {self.year_threshold}, using Unpaywall -> CORE -> Sci-Hub"
+                f"[Router] Year {year} >= {self.year_threshold}, using Unpaywall -> arXiv -> CORE -> Sci-Hub"
             )
-            chain = self._build_chain(["Unpaywall", "CORE", "Sci-Hub"])
+            chain = self._build_chain(["Unpaywall", "arXiv", "CORE", "Sci-Hub"])
 
         return chain
 
