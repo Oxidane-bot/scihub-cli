@@ -28,12 +28,12 @@ class TestMetadataUtils(unittest.TestCase):
             {
                 "doi": "10.1371/journal.pone.0250916",
                 "expected_title": "Contrasting impacts",
-                "expected_year": "2021",
+                "expected_year": 2021,  # int, not string
             },
             {
                 "doi": "10.1038/s41467-021-27699-2",
                 "expected_title": "Visualizing group II intron",
-                "expected_year": "2022",
+                "expected_year": 2022,  # int, not string
             },
         ]
 

@@ -3,6 +3,7 @@ Mirror management and selection logic.
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import requests
@@ -12,6 +13,9 @@ from ..config.settings import settings
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Shorter timeout for mirror testing (mirrors should respond quickly)
+MIRROR_TEST_TIMEOUT = 5  # seconds
 
 
 class MirrorManager:
@@ -98,33 +102,75 @@ class MirrorManager:
         return True
 
     def _find_working_mirror(self) -> str:
-        """Find a working mirror using tiered strategy."""
-        # Tier 1: Easy mirrors first (fastest)
-        logger.info("[Tier 1] Trying easy mirrors first...")
-        easy_mirrors = MirrorConfig.get_easy_mirrors()
-        for mirror in easy_mirrors:
-            if self._is_blacklisted(mirror):
-                continue
-            if self._test_mirror(mirror):
-                logger.info(f"SUCCESS: Using easy mirror: {mirror}")
-                return mirror
+        """Find a working mirror using tiered parallel strategy."""
+        # Tier 1: Easy mirrors first (test in parallel)
+        logger.info("[Tier 1] Testing easy mirrors in parallel...")
+        easy_mirrors = [m for m in MirrorConfig.get_easy_mirrors() if not self._is_blacklisted(m)]
 
-        # Tier 2: Hard mirrors (sci-hub.se) as last resort
-        logger.info("[Tier 2] Easy mirrors failed, trying hard mirrors...")
-        hard_mirrors = MirrorConfig.get_hard_mirrors()
-        for mirror in hard_mirrors:
-            if self._is_blacklisted(mirror):
-                continue
-            if self._test_mirror(mirror, allow_403=True):
-                logger.info(f"SUCCESS: Using hard mirror: {mirror}")
-                return mirror
+        if easy_mirrors:
+            result = self._test_mirrors_parallel(easy_mirrors, allow_403=False)
+            if result:
+                logger.info(f"SUCCESS: Using easy mirror: {result}")
+                return result
+
+        # Tier 2: Hard mirrors (test in parallel)
+        logger.info("[Tier 2] Easy mirrors failed, testing hard mirrors in parallel...")
+        hard_mirrors = [m for m in MirrorConfig.get_hard_mirrors() if not self._is_blacklisted(m)]
+
+        if hard_mirrors:
+            result = self._test_mirrors_parallel(hard_mirrors, allow_403=True)
+            if result:
+                logger.info(f"SUCCESS: Using hard mirror: {result}")
+                return result
 
         raise Exception("All mirrors are unavailable")
 
+    def _test_mirrors_parallel(
+        self, mirrors: list[str], allow_403: bool = False, max_workers: int = 5
+    ) -> Optional[str]:
+        """
+        Test multiple mirrors in parallel, return first working one.
+
+        Args:
+            mirrors: List of mirror URLs to test
+            allow_403: Whether to accept 403 responses as "working"
+            max_workers: Maximum parallel workers
+
+        Returns:
+            First working mirror URL, or None if all failed
+        """
+        if not mirrors:
+            return None
+
+        # Use fewer workers if we have fewer mirrors
+        workers = min(max_workers, len(mirrors))
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            # Submit all mirror tests
+            future_to_mirror = {
+                executor.submit(self._test_mirror, mirror, allow_403): mirror for mirror in mirrors
+            }
+
+            # Return first successful result
+            for future in as_completed(future_to_mirror):
+                mirror = future_to_mirror[future]
+                try:
+                    is_working = future.result()
+                    if is_working:
+                        # Cancel remaining futures (best effort)
+                        for f in future_to_mirror:
+                            f.cancel()
+                        return mirror
+                except Exception as e:
+                    logger.debug(f"Mirror test exception for {mirror}: {e}")
+                    continue
+
+        return None
+
     def _test_mirror(self, mirror: str, allow_403: bool = False) -> bool:
-        """Test if a mirror is accessible."""
+        """Test if a mirror is accessible (uses short timeout)."""
         try:
-            response = self.session.get(mirror, timeout=self.timeout)
+            response = self.session.get(mirror, timeout=MIRROR_TEST_TIMEOUT)
             if response.status_code == 200:
                 return True
             elif response.status_code == 403 and allow_403:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scihub-cli"
-version = "0.2.0"
+version = "0.3.0"
 description = "Multi-source academic paper downloader (Sci-Hub, Unpaywall, CORE)"
 authors = [
     {name = "Sci-Hub CLI", email = "example@example.com"},

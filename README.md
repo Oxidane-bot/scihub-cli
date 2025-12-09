@@ -14,6 +14,9 @@ A command-line tool for batch downloading academic papers with multi-source supp
 - **Smart Year-Based Routing**:
   - Papers before 2021: Sci-Hub first (better historical coverage)
   - Papers 2021+: Unpaywall/arXiv first (better for recent OA papers)
+- **Parallel Source Querying**: Multiple sources queried simultaneously for faster results
+- **Parallel Mirror Testing**: Quickly finds working Sci-Hub mirrors (typically <2s)
+- **Smart Metadata Caching**: Avoids redundant API calls across sources
 - **Smart Fallback**: Automatically tries alternative sources if primary fails
 - **Flexible Input**: Download papers using DOIs, arXiv IDs, or URLs
 - Batch processing from a text file

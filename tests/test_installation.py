@@ -13,11 +13,9 @@ def test_import():
     try:
         import scihub_cli
 
-        print(f"✓ Successfully imported scihub_cli version {scihub_cli.__version__}")
-        return True
+        print(f"Successfully imported scihub_cli version {scihub_cli.__version__}")
     except ImportError as e:
-        print(f"✗ Failed to import scihub_cli: {e}")
-        return False
+        raise AssertionError(f"Failed to import scihub_cli: {e}") from e
 
 
 def test_command():
@@ -27,17 +25,13 @@ def test_command():
         result = subprocess.run(
             ["scihub-cli", "--version"], capture_output=True, text=True, check=True
         )
-        print(f"✓ Command available: {result.stdout.strip()}")
-        return True
+        print(f"Command available: {result.stdout.strip()}")
     except subprocess.CalledProcessError as e:
-        print(f"✗ Command failed: {e}")
-        print(f"Error output: {e.stderr}")
-        return False
-    except FileNotFoundError:
-        print(
-            "✗ Command not found. Make sure the package is installed and the script is in your PATH."
-        )
-        return False
+        raise AssertionError(f"Command failed: {e}\nError output: {e.stderr}") from e
+    except FileNotFoundError as e:
+        raise AssertionError(
+            f"Command not found: {e}. Make sure the package is installed and the script is in your PATH."
+        ) from e
 
 
 if __name__ == "__main__":

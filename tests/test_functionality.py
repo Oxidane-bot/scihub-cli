@@ -49,7 +49,7 @@ def test_download_multi_source():
         if not email:
             print("WARNING: No email configured, Unpaywall tests will be skipped")
             print("Set SCIHUB_CLI_EMAIL or run 'scihub-cli --email your@email.com' first")
-            return None
+            return
 
         client = SciHubClient(output_dir=temp_dir, timeout=30, retries=2, email=email)
 
@@ -60,12 +60,14 @@ def test_download_multi_source():
                 "year": 2013,
                 "description": "Old paper (2013) - should use Sci-Hub first",
                 "expected_source": "Sci-Hub",
+                "required": False,  # Sci-Hub may be unavailable
             },
             {
                 "doi": "10.1371/journal.pone.0250916",
                 "year": 2021,
                 "description": "Recent paper (2021) - PLOS ONE OA, Unpaywall should work",
                 "expected_source": "Unpaywall",
+                "required": True,  # OA papers should always work
             },
         ]
 
@@ -85,19 +87,30 @@ def test_download_multi_source():
                     header = f.read(4)
                     is_valid_pdf = header == b"%PDF"
                     print(f"Valid PDF: {is_valid_pdf}")
-                    results.append(True)
+                    assert is_valid_pdf, f"Downloaded file is not a valid PDF: {result}"
+                    results.append((True, test_case["required"]))
             else:
                 print("FAILED: Could not download")
-                results.append(False)
+                # Only fail the test if this was a required download
+                if test_case["required"]:
+                    results.append((False, True))
+                else:
+                    print("(Non-critical failure - source may be temporarily unavailable)")
+                    results.append((False, False))
 
-        # Return overall result
-        if all(results):
-            print(f"\nAll {len(results)} downloads successful")
-            return True
-        else:
-            success_count = sum(results)
-            print(f"\n{success_count}/{len(results)} downloads successful")
-            return False
+        # Check that all required downloads succeeded
+        required_results = [success for success, required in results if required]
+
+        success_count = sum(success for success, _ in results)
+        required_count = len(required_results)
+        required_success = sum(required_results)
+
+        print(f"\n{success_count}/{len(results)} downloads completed")
+        print(f"Required: {required_success}/{required_count}")
+
+        assert all(
+            required_results
+        ), f"Required downloads failed: {required_success}/{required_count} successful"
 
 
 def test_metadata_extraction():
@@ -115,12 +128,8 @@ def test_metadata_extraction():
     )
     expected = "[2020] - Array programming with NumPy.pdf"
 
-    if test_filename == expected:
-        print(f"Filename generation works: {test_filename}")
-        return True
-    else:
-        print(f"Filename generation failed: got {test_filename}, expected {expected}")
-        return False
+    print(f"Generated filename: {test_filename}")
+    assert test_filename == expected, f"Expected {expected}, got {test_filename}"
 
 
 if __name__ == "__main__":
