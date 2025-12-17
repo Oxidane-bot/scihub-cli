@@ -12,11 +12,12 @@ import requests
 
 from ..utils.logging import get_logger
 from ..utils.retry import RetryConfig
+from .base import PaperSource
 
 logger = get_logger(__name__)
 
 
-class CORESource:
+class CORESource(PaperSource):
     """
     CORE API client for finding and downloading open access papers.
 
@@ -31,7 +32,6 @@ class CORESource:
             api_key: CORE API key (optional, but recommended for better rate limits)
             timeout: Request timeout in seconds
         """
-        self.name = "CORE"
         self.api_key = api_key
         self.timeout = timeout
         self.base_url = "https://api.core.ac.uk/v3"
@@ -47,6 +47,14 @@ class CORESource:
 
         # Retry configuration
         self.retry_config = RetryConfig(max_attempts=2, base_delay=2.0)
+
+    @property
+    def name(self) -> str:
+        return "CORE"
+
+    def can_handle(self, doi: str) -> bool:
+        """CORE searches by DOI and only returns OA content."""
+        return doi.startswith("10.")
 
     def get_metadata(self, doi: str) -> Optional[dict]:
         """
@@ -113,7 +121,7 @@ class CORESource:
 
                     return {
                         "title": work.get("title", ""),
-                        "year": str(work.get("yearPublished", "")),
+                        "year": work.get("yearPublished"),
                         "is_oa": True,  # CORE only has OA content
                         "pdf_url": work.get("downloadUrl"),
                         "core_id": work.get("id"),

@@ -92,6 +92,10 @@ class UnpaywallSource(PaperSource):
         """
         return self._fetch_metadata(doi)
 
+    def get_cached_metadata(self, doi: str) -> Optional[dict[str, Any]]:
+        """Return cached metadata without triggering a network request."""
+        return self._metadata_cache.get(doi)
+
     def _fetch_metadata(self, doi: str) -> Optional[dict[str, str]]:
         """
         Fetch and cache metadata from Unpaywall API.

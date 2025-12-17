@@ -82,7 +82,7 @@ If you prefer to run directly from source:
 
 3. Run directly with Python:
    ```
-   python -m scihub_cli.scihub_dl input_file.txt
+   python -m scihub_cli input_file.txt
    ```
 
 ### Troubleshooting Installation
@@ -146,7 +146,7 @@ scihub-cli input_file.txt
 uvx scihub-cli input_file.txt
 
 # If running directly from source
-python -m scihub_cli.scihub_dl input_file.txt
+python -m scihub_cli input_file.txt
 ```
 
 Where `input_file.txt` is a text file containing DOIs or paper URLs, one per line.
@@ -156,7 +156,11 @@ Where `input_file.txt` is a text file containing DOIs or paper URLs, one per lin
 Create a text file with one identifier per line. Supports:
 - **DOIs**: `10.1038/nature12373`
 - **arXiv IDs**: `2301.12345` or `arxiv:2401.00001`
-- **URLs**: `https://doi.org/10.1126/science.abc1234`
+- **URLs**:
+  - DOI URLs: `https://doi.org/10.1126/science.abc1234`
+  - Direct PDF URLs: `https://files.eric.ed.gov/fulltext/EJ1358705.pdf`
+  - PMC article URLs: `https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/`
+  - OA landing pages (auto PDF extraction): `https://example.org/article/123`
 
 Example `papers.txt`:
 ```
@@ -164,7 +168,8 @@ Example `papers.txt`:
 10.1038/s41586-020-2649-2
 2301.12345
 arxiv:2401.00001
-https://www.nature.com/articles/s41586-021-03380-y
+https://files.eric.ed.gov/fulltext/EJ1358705.pdf
+https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/
 10.1016/s1003-6326(21)65629-7
 ```
 

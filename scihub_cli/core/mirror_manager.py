@@ -24,12 +24,13 @@ class MirrorManager:
     def __init__(self, mirrors: Optional[list[str]] = None, timeout: int = None):
         self.mirrors = mirrors or MirrorConfig.get_all_mirrors()
         self.timeout = timeout or settings.timeout
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-        )
+        self._headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/91.0.4472.124 Safari/537.36"
+            )
+        }
 
         # Mirror caching
         self._cached_mirror: Optional[str] = None
@@ -145,12 +146,12 @@ class MirrorManager:
         # Use fewer workers if we have fewer mirrors
         workers = min(max_workers, len(mirrors))
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            # Submit all mirror tests
-            future_to_mirror = {
-                executor.submit(self._test_mirror, mirror, allow_403): mirror for mirror in mirrors
-            }
+        executor = ThreadPoolExecutor(max_workers=workers)
+        future_to_mirror = {
+            executor.submit(self._test_mirror, mirror, allow_403): mirror for mirror in mirrors
+        }
 
+        try:
             # Return first successful result
             for future in as_completed(future_to_mirror):
                 mirror = future_to_mirror[future]
@@ -164,13 +165,16 @@ class MirrorManager:
                 except Exception as e:
                     logger.debug(f"Mirror test exception for {mirror}: {e}")
                     continue
+        finally:
+            # Don't block on slow/blocked mirrors once we have a result.
+            executor.shutdown(wait=False, cancel_futures=True)
 
         return None
 
     def _test_mirror(self, mirror: str, allow_403: bool = False) -> bool:
         """Test if a mirror is accessible (uses short timeout)."""
         try:
-            response = self.session.get(mirror, timeout=MIRROR_TEST_TIMEOUT)
+            response = requests.get(mirror, timeout=MIRROR_TEST_TIMEOUT, headers=self._headers)
             if response.status_code == 200:
                 return True
             elif response.status_code == 403 and allow_403:

@@ -18,7 +18,7 @@
 - **并行镜像测试**: 快速找到可用的 Sci-Hub 镜像 (通常 <2秒)
 - **智能元数据缓存**: 避免跨源重复 API 调用
 - **智能回退**: 主要来源失败时自动尝试备用来源
-- **灵活输入**: 支持 DOI、arXiv ID 或 URL
+- **灵活输入**: 支持 DOI、arXiv ID，以及 URL（doi.org、直链PDF、PMC文章页、开放获取落地页自动提取PDF等）
 - 支持从文本文件批量处理
 - 自动镜像选择和测试
 - 可自定义输出目录
@@ -85,7 +85,7 @@ uvx scihub-cli papers.txt
 
 3. 直接使用Python运行：
    ```
-   python -m scihub_cli.scihub_dl 输入文件.txt
+   python -m scihub_cli 输入文件.txt
    ```
 
 ### 安装故障排除
@@ -135,17 +135,18 @@ scihub-cli 输入文件.txt
 uvx scihub-cli 输入文件.txt
 
 # 如果直接运行
-python -m scihub_cli.scihub_dl 输入文件.txt
+python -m scihub_cli 输入文件.txt
 ```
 
-其中`输入文件.txt`是包含DOI或论文URL的文本文件，每行一个。
+其中`输入文件.txt`是包含 DOI / arXiv ID / URL 的文本文件，每行一个。
 
 ### 输入文件格式
 
 ```
 # 以井号开头的行为注释
 10.1038/s41586-020-2649-2
-https://www.nature.com/articles/s41586-021-03380-y
+https://files.eric.ed.gov/fulltext/EJ1358705.pdf
+https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/
 10.1016/s1003-6326(21)65629-7
 ```
 
@@ -163,9 +164,10 @@ scihub-cli papers.txt --email your-email@university.edu
 ### 命令行选项
 
 ```
-用法: scihub-cli [-h] [-o OUTPUT] [-m MIRROR] [-t TIMEOUT] [-r RETRIES] [-p PARALLEL] [-v] [--version] 输入文件
+用法: scihub-cli [-h] [-o OUTPUT] [-m MIRROR] [-t TIMEOUT] [-r RETRIES] [-p PARALLEL]
+                 [--email EMAIL] [-v] [--version] 输入文件
 
-从Sci-Hub批量下载学术论文。
+批量下载学术论文（Sci-Hub、Unpaywall、arXiv、CORE）。
 
 位置参数:
   输入文件              包含DOI或URL的文本文件（每行一个）
@@ -182,6 +184,7 @@ scihub-cli papers.txt --email your-email@university.edu
                         下载失败时的重试次数（默认: 3）
   -p PARALLEL, --parallel PARALLEL
                         预留参数，当前顺序下载
+  --email EMAIL         Unpaywall API 邮箱（会保存到配置文件）
   -v, --verbose         启用详细日志
   --version             显示程序版本号并退出
 ```
@@ -207,20 +210,21 @@ uvx scihub-cli papers.txt
 
 ## 工作原理
 
-该工具的工作原理是：
+该工具采用“多来源查找 + 自动回退”的方式：
 
-1. 读取输入文件并提取DOI/URL
-2. 对于每个DOI/URL：
-   - 访问Sci-Hub获取论文页面
-   - 提取直接下载链接
-   - 下载PDF文件
-   - 将其保存到输出目录
+1. 读取输入文件（支持 DOI、arXiv ID、URL）
+2. （可选）通过 Crossref 获取发表年份，用于智能路由
+3. 按路由策略查询多个来源获取 PDF 链接与元数据：
+   - 2021 年前：优先 Sci-Hub
+   - 2021 年后：优先 Unpaywall / arXiv / CORE（更偏向合法 OA）
+4. 下载 PDF、校验文件有效性（拒绝 HTML）、按元数据生成文件名（如 `[YYYY] - [Title].pdf`）
 
 ## 限制
 
-- 并非所有论文都可在Sci-Hub上获取
-- Sci-Hub镜像站点可能会变更或不可用
-- 该工具依赖于Sci-Hub的网站结构，该结构可能会随时间变化
+- 并非所有论文都能从这些来源获取到 PDF
+- Unpaywall/CORE 只覆盖开放获取（OA）内容
+- Sci-Hub 镜像可能变更或临时不可用
+- 部分出版商可能会限制自动化下载
 
 ## 法律免责声明
 
@@ -233,13 +237,11 @@ uvx scihub-cli papers.txt
 ### 运行测试
 
 ```bash
-# 运行所有测试
-python tests/test_functionality.py
-python tests/test_metadata_utils.py
-python tests/test_installation.py
+# 运行所有单元测试（推荐）
+uv run python -m unittest discover -v
 
-# 使用详细输出运行测试
-python -m pytest tests/ -v
+# 仅运行某个测试文件
+uv run python -m unittest tests/test_metadata_utils.py -v
 ```
 
 ### 测试结果

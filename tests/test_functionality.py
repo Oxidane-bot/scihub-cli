@@ -7,13 +7,31 @@ import os
 import sys
 import tempfile
 
+import pytest
+
 # Add the scihub_cli module to the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scihub_cli.client import SciHubClient
 from scihub_cli.core.mirror_manager import MirrorManager
+from scihub_cli.core.source_manager import SourceManager
+from scihub_cli.sources.arxiv_source import ArxivSource
+from scihub_cli.sources.core_source import CORESource
+from scihub_cli.sources.unpaywall_source import UnpaywallSource
 
 
+def _allow_scihub_tests() -> bool:
+    return os.getenv("SCIHUB_CLI_ALLOW_SCIHUB", "").lower() in {"1", "true", "yes"}
+
+
+def _network_tests_enabled() -> bool:
+    return os.getenv("SCIHUB_CLI_RUN_NETWORK_TESTS", "").lower() in {"1", "true", "yes"}
+
+
+@pytest.mark.skipif(
+    not _allow_scihub_tests(),
+    reason="Sci-Hub integration tests are opt-in via SCIHUB_CLI_ALLOW_SCIHUB=1",
+)
 def test_mirrors():
     """Test all mirrors for basic connectivity"""
     print("Testing mirror connectivity...")
@@ -35,6 +53,8 @@ def test_mirrors():
 def test_download_multi_source():
     """Test download functionality with multiple sources and different years"""
     print("\nTesting multi-source download functionality...")
+    if not _network_tests_enabled():
+        pytest.skip("Network download test is opt-in via SCIHUB_CLI_RUN_NETWORK_TESTS=1")
 
     # Create temporary directory for testing
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -47,28 +67,30 @@ def test_download_multi_source():
             email = user_config.get_email()
 
         if not email:
-            print("WARNING: No email configured, Unpaywall tests will be skipped")
-            print("Set SCIHUB_CLI_EMAIL or run 'scihub-cli --email your@email.com' first")
-            return
+            pytest.skip(
+                "No email configured for Unpaywall tests. Set SCIHUB_CLI_EMAIL or run "
+                "'scihub-cli --email your@email.com' first."
+            )
 
-        client = SciHubClient(output_dir=temp_dir, timeout=30, retries=2, email=email)
+        # Avoid contacting Sci-Hub by default: construct an OA-only source manager.
+        sources = [
+            ArxivSource(timeout=30),
+            CORESource(api_key=None, timeout=30),
+        ]
+        sources.insert(0, UnpaywallSource(email=email, timeout=30))
 
-        # Test cases: different years and sources
+        source_manager = SourceManager(
+            sources=sources, year_threshold=2021, enable_year_routing=False
+        )
+        client = SciHubClient(
+            output_dir=temp_dir, timeout=30, retries=2, email=email, source_manager=source_manager
+        )
+
         test_cases = [
             {
-                "doi": "10.1038/nature12373",
-                "year": 2013,
-                "description": "Old paper (2013) - should use Sci-Hub first",
-                "expected_source": "Sci-Hub",
-                "required": False,  # Sci-Hub may be unavailable
-            },
-            {
                 "doi": "10.1371/journal.pone.0250916",
-                "year": 2021,
-                "description": "Recent paper (2021) - PLOS ONE OA, Unpaywall should work",
-                "expected_source": "Unpaywall",
-                "required": True,  # OA papers should always work
-            },
+                "description": "OA paper (PLOS ONE) via Unpaywall",
+            }
         ]
 
         results = []
@@ -88,29 +110,13 @@ def test_download_multi_source():
                     is_valid_pdf = header == b"%PDF"
                     print(f"Valid PDF: {is_valid_pdf}")
                     assert is_valid_pdf, f"Downloaded file is not a valid PDF: {result}"
-                    results.append((True, test_case["required"]))
+                    results.append(True)
             else:
-                print("FAILED: Could not download")
-                # Only fail the test if this was a required download
-                if test_case["required"]:
-                    results.append((False, True))
-                else:
-                    print("(Non-critical failure - source may be temporarily unavailable)")
-                    results.append((False, False))
+                results.append(False)
 
-        # Check that all required downloads succeeded
-        required_results = [success for success, required in results if required]
+        assert all(results), f"OA downloads failed: {sum(results)}/{len(results)} successful"
 
-        success_count = sum(success for success, _ in results)
-        required_count = len(required_results)
-        required_success = sum(required_results)
-
-        print(f"\n{success_count}/{len(results)} downloads completed")
-        print(f"Required: {required_success}/{required_count}")
-
-        assert all(
-            required_results
-        ), f"Required downloads failed: {required_success}/{required_count} successful"
+        print(f"\n{sum(results)}/{len(results)} downloads completed")
 
 
 def test_metadata_extraction():

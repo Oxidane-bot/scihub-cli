@@ -42,9 +42,9 @@ class SciHubSource(PaperSource):
     def name(self) -> str:
         return "Sci-Hub"
 
-    def can_handle(self, doi: str) -> bool:
-        """Sci-Hub can potentially handle any DOI."""
-        return True
+    def can_handle(self, identifier: str) -> bool:
+        """Sci-Hub is only attempted for DOIs (avoids unnecessary requests for non-DOI IDs)."""
+        return identifier.startswith("10.")
 
     def get_pdf_url(self, doi: str) -> Optional[str]:
         """
