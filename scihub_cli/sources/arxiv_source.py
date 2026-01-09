@@ -4,6 +4,7 @@ arXiv source implementation.
 
 import re
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -220,6 +221,20 @@ class ArxivSource(PaperSource):
         """
         # Remove 'arxiv:' prefix if present (case insensitive)
         clean = re.sub(r"^arxiv:", "", identifier, flags=re.IGNORECASE).strip()
+
+        # Extract from arXiv URLs (abs/pdf/e-print)
+        parsed = urlparse(clean)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            domain = parsed.netloc.lower()
+            if "arxiv.org" in domain:
+                path = parsed.path.lstrip("/")
+                for prefix in ("abs/", "pdf/", "e-print/"):
+                    if path.startswith(prefix):
+                        candidate = path[len(prefix) :]
+                        if candidate.endswith(".pdf"):
+                            candidate = candidate[: -len(".pdf")]
+                        clean = candidate
+                        break
 
         # New format (2015+): YYMM.NNNNN or YYMM.NNNNNvN
         if re.match(r"^\d{4}\.\d{4,5}(v\d+)?$", clean):

@@ -9,12 +9,12 @@
 - **多数据源支持**: 智能路由多个下载源
   - **arXiv**: 预印本优先 (免费,无需 API key)
   - **Unpaywall**: 开放获取论文 (需要邮箱)
-  - **Sci-Hub**: 综合备选源 (85%+ 覆盖率)
+  - **Sci-Hub**: 历史论文备选源 (覆盖率高但更慢)
   - **CORE**: 额外的开放获取备选
 - **智能年份路由**:
-  - 2021年前论文: 优先使用 Sci-Hub (历史覆盖更好)
-  - 2021年后论文: 优先使用 Unpaywall/arXiv (最新开放获取论文)
-- **并行源查询**: 多个数据源同时查询，大幅缩短等待时间
+  - 2021年前论文: 先 OA 源，Sci-Hub 兜底
+  - 2021年后论文: 仅 OA 源 (跳过 Sci-Hub)
+- **并行源查询**: 快源并行查询，慢源作为兜底
 - **并行镜像测试**: 快速找到可用的 Sci-Hub 镜像 (通常 <2秒)
 - **智能元数据缓存**: 避免跨源重复 API 调用
 - **智能回退**: 主要来源失败时自动尝试备用来源
@@ -179,7 +179,7 @@ scihub-cli papers.txt --email your-email@university.edu
   -m MIRROR, --mirror MIRROR
                         指定要使用的Sci-Hub镜像站点
   -t TIMEOUT, --timeout TIMEOUT
-                        请求超时时间（秒）（默认: 30）
+                        请求超时时间（秒）（默认: 15）
   -r RETRIES, --retries RETRIES
                         下载失败时的重试次数（默认: 3）
   -p PARALLEL, --parallel PARALLEL
@@ -215,8 +215,9 @@ uvx scihub-cli papers.txt
 1. 读取输入文件（支持 DOI、arXiv ID、URL）
 2. （可选）通过 Crossref 获取发表年份，用于智能路由
 3. 按路由策略查询多个来源获取 PDF 链接与元数据：
-   - 2021 年前：优先 Sci-Hub
-   - 2021 年后：优先 Unpaywall / arXiv / CORE（更偏向合法 OA）
+   - 2021 年前：先 OA 源，Sci-Hub 兜底
+   - 2021 年后：仅 OA 源（跳过 Sci-Hub）
+   - 年份未知：OA 优先，Sci-Hub 兜底
 4. 下载 PDF、校验文件有效性（拒绝 HTML）、按元数据生成文件名（如 `[YYYY] - [Title].pdf`）
 
 ## 限制

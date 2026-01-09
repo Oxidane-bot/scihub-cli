@@ -81,6 +81,43 @@ class FileDownloader:
             logger.error(f"Download failed after all retries: {error_msg}")
             return False, error_msg
 
+    def probe_pdf_url(self, url: str) -> bool:
+        """
+        Probe a URL to see if it appears to serve a PDF without downloading it.
+
+        Returns:
+            True if the response looks like a PDF, False otherwise.
+        """
+        response = None
+        try:
+            response = self.session.get(url, timeout=self.timeout, stream=True)
+
+            if response.status_code == 403:
+                logger.debug(f"Probe got 403 for {url}; treating as potentially valid PDF")
+                return True
+            if response.status_code != 200:
+                return False
+
+            content_type = response.headers.get("Content-Type", "")
+            if "html" in content_type.lower():
+                return False
+
+            header = b""
+            for chunk in response.iter_content(chunk_size=4):
+                header += chunk
+                if len(header) >= 4:
+                    break
+
+            return header[:4] == b"%PDF"
+        except Exception as e:
+            logger.debug(f"Probe failed for {url}: {e}")
+            return False
+        finally:
+            if response is not None:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
+
     def _download_once(self, url: str, output_path: str) -> tuple[bool, Optional[str]]:
         """
         Single download attempt with error classification.

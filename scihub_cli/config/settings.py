@@ -12,7 +12,7 @@ class Settings:
 
     # Default settings
     DEFAULT_OUTPUT_DIR = "./downloads"
-    DEFAULT_TIMEOUT = 30
+    DEFAULT_TIMEOUT = 15
     DEFAULT_RETRIES = 3
     DEFAULT_PARALLEL = 3
     # No default email - user must configure
@@ -26,7 +26,7 @@ class Settings:
     MAX_TITLE_LENGTH = 80
 
     # Multi-source settings
-    YEAR_THRESHOLD = 2021  # Papers before this year: Sci-Hub first; after: OA first
+    YEAR_THRESHOLD = 2021  # Papers before this year: OA first with Sci-Hub fallback
     ENABLE_YEAR_ROUTING = True  # Enable intelligent year-based source routing
 
     # Logging settings

@@ -60,9 +60,7 @@ class HTMLLandingSource(PaperSource):
         candidates: list[tuple[int, str]] = []
 
         # 1) High-signal citation meta tags
-        for meta in soup.find_all(
-            "meta", attrs={"name": re.compile(r"citation_pdf_url", re.I)}
-        ):
+        for meta in soup.find_all("meta", attrs={"name": re.compile(r"citation_pdf_url", re.I)}):
             content = (meta.get("content") or "").strip()
             if content:
                 candidates.append((1000, self._absolutize(base_url, content)))

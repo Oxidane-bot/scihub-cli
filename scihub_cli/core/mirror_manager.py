@@ -106,7 +106,11 @@ class MirrorManager:
         """Find a working mirror using tiered parallel strategy."""
         # Tier 1: Easy mirrors first (test in parallel)
         logger.info("[Tier 1] Testing easy mirrors in parallel...")
-        easy_mirrors = [m for m in MirrorConfig.get_easy_mirrors() if not self._is_blacklisted(m)]
+        easy_mirrors = [
+            m
+            for m in self.mirrors
+            if not self._is_blacklisted(m) and not MirrorConfig.is_hard_mirror(m)
+        ]
 
         if easy_mirrors:
             result = self._test_mirrors_parallel(easy_mirrors, allow_403=False)
@@ -116,7 +120,11 @@ class MirrorManager:
 
         # Tier 2: Hard mirrors (test in parallel)
         logger.info("[Tier 2] Easy mirrors failed, testing hard mirrors in parallel...")
-        hard_mirrors = [m for m in MirrorConfig.get_hard_mirrors() if not self._is_blacklisted(m)]
+        hard_mirrors = [
+            m
+            for m in self.mirrors
+            if not self._is_blacklisted(m) and MirrorConfig.is_hard_mirror(m)
+        ]
 
         if hard_mirrors:
             result = self._test_mirrors_parallel(hard_mirrors, allow_403=True)

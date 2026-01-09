@@ -9,12 +9,12 @@ A command-line tool for batch downloading academic papers with multi-source supp
 - **Multi-Source Support**: Intelligently routes downloads across multiple sources
   - **arXiv**: Prioritized for preprints (free, no API key needed)
   - **Unpaywall**: For open access papers (requires email)
-  - **Sci-Hub**: Comprehensive fallback (85%+ coverage)
+  - **Sci-Hub**: Fallback for older papers (coverage-driven, slower)
   - **CORE**: Additional OA fallback
 - **Smart Year-Based Routing**:
-  - Papers before 2021: Sci-Hub first (better historical coverage)
-  - Papers 2021+: Unpaywall/arXiv first (better for recent OA papers)
-- **Parallel Source Querying**: Multiple sources queried simultaneously for faster results
+  - Papers before 2021: OA sources first, Sci-Hub fallback
+  - Papers 2021+: OA sources only (skip Sci-Hub)
+- **Parallel Source Querying**: Fast sources queried in parallel with slow-source fallback
 - **Parallel Mirror Testing**: Quickly finds working Sci-Hub mirrors (typically <2s)
 - **Smart Metadata Caching**: Avoids redundant API calls across sources
 - **Smart Fallback**: Automatically tries alternative sources if primary fails
@@ -202,7 +202,7 @@ options:
   -m MIRROR, --mirror MIRROR
                         Specific Sci-Hub mirror to use
   -t TIMEOUT, --timeout TIMEOUT
-                        Request timeout in seconds (default: 30)
+                        Request timeout in seconds (default: 15)
   -r RETRIES, --retries RETRIES
                         Number of retries for failed downloads (default: 3)
   -p PARALLEL, --parallel PARALLEL
@@ -246,9 +246,9 @@ The tool uses intelligent multi-source routing:
 
 1. **Year Detection**: Queries Crossref API to determine publication year
 2. **Smart Routing**:
-   - Papers before 2021 → Try Sci-Hub first, then Unpaywall
-   - Papers 2021+ → Try Unpaywall first, then Sci-Hub
-   - Unknown year → Try Unpaywall first (conservative)
+   - Papers before 2021 → Try OA sources first, then Sci-Hub fallback
+   - Papers 2021+ → Try OA sources only (skip Sci-Hub)
+   - Unknown year → OA sources first with Sci-Hub fallback
 3. **Download Process**:
    - Get PDF URL from selected source
    - Download with progress tracking
@@ -257,9 +257,9 @@ The tool uses intelligent multi-source routing:
 
 ### Why Multi-Source?
 
-- **Sci-Hub**: Excellent for pre-2021 papers (85%+ coverage), but stopped updating in 2020
+- **Sci-Hub**: Strong fallback for pre-2021 coverage, but stopped updating in 2020
 - **Unpaywall**: Best for 2021+ open access papers (25-35% coverage for recent papers)
-- **Combined**: Achieves ~75-80% overall success rate vs ~70% with Sci-Hub alone
+- **Combined**: OA-first speed with Sci-Hub fallback for older literature
 
 ### Domain-Specific User-Agents
 
@@ -271,8 +271,8 @@ The tool automatically adapts HTTP headers for different publishers:
 
 | Year Range | Primary Source | Success Rate |
 |-----------|---------------|--------------|
-| Before 2021 | Sci-Hub | 85-90% |
-| 2021+ | Unpaywall | 25-35% |
+| Before 2021 | OA first (Sci-Hub fallback) | 85-90% |
+| 2021+ | OA (Unpaywall/arXiv/CORE) | 25-35% |
 | Overall | Multi-source | 75-80% |
 
 ## Limitations
@@ -306,7 +306,7 @@ uv run python -m unittest discover -v
 
 The test suite covers:
 
-- ✅ **Multi-Source Download**: Tests year-based routing (2013 paper via Sci-Hub, 2021 via Unpaywall)
+- ✅ **Multi-Source Download**: Tests OA-first routing with Sci-Hub fallback for pre-2021 papers
 - ✅ **PDF Validation**: Verifies downloaded files have valid PDF headers
 - ✅ **Mirror Connectivity**: Tests all Sci-Hub mirrors for accessibility
 - ✅ **Metadata Extraction**: Tests Unpaywall API metadata retrieval
@@ -316,8 +316,8 @@ The test suite covers:
 
 ```
 Multi-source download: 2/2 PASS
-- 2013 paper (944 KB) via Sci-Hub ✓
-- 2021 paper (1.6 MB) via Unpaywall ✓
+- 2013 paper (944 KB) via OA-first (Sci-Hub fallback if OA fails) ✓
+- 2021 paper (1.6 MB) via OA (Sci-Hub skipped) ✓
 PDF validation: All valid ✓
 Metadata extraction: PASS ✓
 ```

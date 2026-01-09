@@ -54,8 +54,12 @@ class PMCSource(PaperSource):
                 return pdf_url
 
         # Fallback to predictable endpoints when HTML extraction fails.
+        probe = getattr(self.downloader, "probe_pdf_url", None)
         for candidate in self._fallback_pdf_urls(pmc_id):
             logger.debug(f"[PMC] Falling back to constructed PDF URL for {pmc_id}: {candidate}")
+            if callable(probe) and not probe(candidate):
+                logger.debug(f"[PMC] Fallback URL did not validate as PDF: {candidate}")
+                continue
             return candidate
 
         return None

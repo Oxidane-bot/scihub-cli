@@ -3,6 +3,7 @@ HTTP session management with stealth features.
 """
 
 import random
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -146,10 +147,17 @@ class BasicSession:
     """Basic HTTP session without stealth features."""
 
     def __init__(self, timeout: int = 30):
-        self.session = requests.Session()
+        self._local = threading.local()
         self.timeout = timeout
         # Default browser User-Agent (will be overridden per-request based on domain)
         self.default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+
+    def _get_session(self) -> requests.Session:
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            self._local.session = session
+        return session
 
     def _get_user_agent_for_url(self, url: str) -> str:
         """Get appropriate User-Agent based on domain."""
@@ -167,6 +175,7 @@ class BasicSession:
         kwargs.setdefault("timeout", self.timeout)
 
         # Set User-Agent based on target domain
-        self.session.headers.update({"User-Agent": self._get_user_agent_for_url(url)})
+        session = self._get_session()
+        session.headers.update({"User-Agent": self._get_user_agent_for_url(url)})
 
-        return self.session.get(url, **kwargs)
+        return session.get(url, **kwargs)

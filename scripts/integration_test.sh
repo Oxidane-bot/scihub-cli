@@ -118,7 +118,7 @@ HOME="$home_dir" "$venv_python" -m scihub_cli.scihub_dl --version
 usage_line="$(HOME="$home_dir" "$venv_python" -m scihub_cli --help | head -n 1)"
 echo "$usage_line" | grep -q "usage: scihub-cli"
 
-HOME="$home_dir" "$scihub_cli" "$input_file" -o "$out_dir" -t 30 -r 2 >"$cli_log" 2>&1
+HOME="$home_dir" "$scihub_cli" "$input_file" -o "$out_dir" -t 15 -r 2 >"$cli_log" 2>&1
 
 if grep -q "Finding working mirror" "$cli_log"; then
   echo "Unexpected Sci-Hub mirror probing occurred during non-DOI integration test." >&2
