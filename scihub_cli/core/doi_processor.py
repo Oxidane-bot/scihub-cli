@@ -20,6 +20,7 @@ class DOIProcessor:
         """Convert URL or DOI to a normalized DOI format."""
         identifier = identifier.strip()
         identifier = re.sub(r"^doi[:\s]+", "", identifier, flags=re.IGNORECASE)
+        identifier = re.sub(r"\s+", "", identifier)
         # If it's already a DOI
         if re.match(cls.DOI_PATTERN, identifier):
             return identifier
