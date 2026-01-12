@@ -69,6 +69,16 @@ class FileDownloader:
             # Check if it's a 403 error - might be CDN protection
             error_msg = str(e)
             if "403" in error_msg:
+                logger.warning("Got 403 error, attempting cloudscraper bypass...")
+                success, bypass_error = self._download_with_cloudscraper(
+                    url, output_path, progress_callback
+                )
+                if success:
+                    logger.info("Successfully downloaded using cloudscraper bypass")
+                    return True, None
+                if bypass_error:
+                    logger.warning(f"cloudscraper bypass also failed: {bypass_error}")
+
                 logger.warning("Got 403 error, attempting curl_cffi bypass...")
                 success, bypass_error = self._download_with_curl_cffi(
                     url, output_path, progress_callback
@@ -76,7 +86,7 @@ class FileDownloader:
                 if success:
                     logger.info("Successfully downloaded using curl_cffi bypass")
                     return True, None
-                else:
+                if bypass_error:
                     logger.warning(f"curl_cffi bypass also failed: {bypass_error}")
 
             # Don't retry permanent failures
@@ -215,6 +225,65 @@ class FileDownloader:
             # Unknown errors are considered retryable (conservative)
             raise RetryableError(f"Download error: {e}") from e
 
+    def _download_with_cloudscraper(
+        self,
+        url: str,
+        output_path: str,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+    ) -> tuple[bool, Optional[str]]:
+        """Bypass Cloudflare challenges using cloudscraper."""
+        try:
+            import cloudscraper
+        except ImportError:
+            return False, "cloudscraper not installed (pip install cloudscraper)"
+
+        import os
+        import shutil
+        import tempfile
+
+        try:
+            scraper = cloudscraper.create_scraper()
+            response = scraper.get(url, timeout=self.timeout, stream=True)
+
+            if response.status_code != 200:
+                return False, f"HTTP {response.status_code}"
+
+            content_type = response.headers.get("Content-Type", "")
+            if "html" in content_type.lower():
+                return False, f"Server returned HTML (Content-Type: {content_type})"
+
+            temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
+            total_header = response.headers.get("Content-Length")
+            total_bytes = int(total_header) if total_header and total_header.isdigit() else None
+            bytes_downloaded = 0
+
+            try:
+                with os.fdopen(temp_fd, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=settings.CHUNK_SIZE):
+                        if chunk:
+                            f.write(chunk)
+                            bytes_downloaded += len(chunk)
+                            if progress_callback:
+                                progress_callback(bytes_downloaded, total_bytes)
+
+                with open(temp_path, "rb") as f:
+                    header = f.read(4)
+                    if header != b"%PDF":
+                        os.unlink(temp_path)
+                        return False, "Downloaded file is not a valid PDF"
+
+                shutil.move(temp_path, output_path)
+                return True, None
+
+            except Exception:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+
+        except Exception as e:
+            logger.debug(f"[cloudscraper] Download failed: {e}")
+            return False, str(e)
+
     def _download_with_curl_cffi(
         self,
         url: str,
@@ -315,17 +384,47 @@ class FileDownloader:
 
             # If we get 403, try curl_cffi bypass
             if response.status_code == 403:
+                logger.warning("Got 403 accessing page, attempting cloudscraper bypass...")
+                html, status = self._get_page_with_cloudscraper(url)
+                if html:
+                    logger.info("Successfully fetched page using cloudscraper bypass")
+                    return html, status
+                logger.warning("cloudscraper bypass also failed for page access")
+
                 logger.warning("Got 403 accessing page, attempting curl_cffi bypass...")
                 html, status = self._get_page_with_curl_cffi(url)
                 if html:
                     logger.info("Successfully fetched page using curl_cffi bypass")
                     return html, status
-                else:
-                    logger.warning("curl_cffi bypass also failed for page access")
+                logger.warning("curl_cffi bypass also failed for page access")
 
             return response.text, response.status_code
         except Exception as e:
             logger.error(f"Error fetching page content: {e}")
+            return None, None
+
+    def _get_page_with_cloudscraper(self, url: str) -> tuple[Optional[str], Optional[int]]:
+        """
+        Fetch page content using cloudscraper to solve JS challenges.
+
+        Args:
+            url: URL to fetch
+
+        Returns:
+            Tuple of (html_content, status_code)
+        """
+        try:
+            import cloudscraper
+        except ImportError:
+            return None, None
+
+        try:
+            scraper = cloudscraper.create_scraper()
+            response = scraper.get(url, timeout=self.timeout)
+            logger.debug(f"[cloudscraper] Page fetch status: {response.status_code}")
+            return response.text, response.status_code
+        except Exception as e:
+            logger.debug(f"[cloudscraper] Page fetch failed: {e}")
             return None, None
 
     def _get_page_with_curl_cffi(self, url: str) -> tuple[Optional[str], Optional[int]]:
