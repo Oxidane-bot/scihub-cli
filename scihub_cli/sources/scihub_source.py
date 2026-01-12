@@ -58,55 +58,56 @@ class SciHubSource(PaperSource):
         """
         try:
             # Get working mirror (uses cache if available)
-            mirror = self.mirror_manager.get_working_mirror()
+            preferred_mirror = self.mirror_manager.get_working_mirror()
+            mirrors = [preferred_mirror]
+            for mirror in self.mirror_manager.mirrors:
+                if mirror not in mirrors:
+                    mirrors.append(mirror)
 
-            # Format DOI for Sci-Hub URL if it's a DOI
-            formatted_doi = (
-                self.doi_processor.format_doi_for_url(doi) if doi.startswith("10.") else doi
-            )
+            for mirror in mirrors:
+                if mirror != preferred_mirror:
+                    logger.info(f"[Sci-Hub] Switching mirror to {mirror} for {doi}")
+                download_url, page_ok = self._get_download_url_from_mirror(mirror, doi)
+                if download_url:
+                    logger.debug(f"[Sci-Hub] Found PDF URL: {download_url}")
+                    return download_url
+                if not page_ok:
+                    self.mirror_manager.mark_failed(mirror)
 
-            # Construct Sci-Hub URL
-            scihub_url = f"{mirror}/{formatted_doi}"
-            logger.debug(f"[Sci-Hub] Accessing: {scihub_url}")
-
-            # Get the Sci-Hub page
-            html_content, status_code = self.downloader.get_page_content(scihub_url)
-            if not html_content or status_code != 200:
-                # Try fallback with original DOI format
-                if doi.startswith("10."):
-                    fallback_url = f"{mirror}/{doi}"
-                    logger.debug(f"[Sci-Hub] Trying fallback: {fallback_url}")
-                    html_content, status_code = self.downloader.get_page_content(fallback_url)
-                    if not html_content or status_code != 200:
-                        logger.warning(f"[Sci-Hub] Failed to access page: {status_code}")
-                        # Invalidate mirror cache on failure
-                        self.mirror_manager.invalidate_cache()
-                        return None
-                else:
-                    logger.warning(f"[Sci-Hub] Failed to access page: {status_code}")
-                    # Invalidate mirror cache on failure
-                    self.mirror_manager.invalidate_cache()
-                    return None
-
-            # Extract the download URL
-            download_url = self.parser.extract_download_url(html_content, mirror)
-            if not download_url and doi.startswith("10."):
-                # Try fallback with original DOI format if extraction failed
-                fallback_url = f"{mirror}/{doi}"
-                logger.debug(f"[Sci-Hub] Extraction failed, trying fallback: {fallback_url}")
-                html_content, status_code = self.downloader.get_page_content(fallback_url)
-                if html_content and status_code == 200:
-                    download_url = self.parser.extract_download_url(html_content, mirror)
-
-            if download_url:
-                logger.debug(f"[Sci-Hub] Found PDF URL: {download_url}")
-            else:
-                logger.warning(f"[Sci-Hub] Could not extract download URL for {doi}")
-
-            return download_url
+            logger.warning(f"[Sci-Hub] Could not extract download URL for {doi}")
+            return None
 
         except Exception as e:
             logger.warning(f"[Sci-Hub] Error getting PDF URL for {doi}: {e}")
             # Invalidate mirror cache on exception
             self.mirror_manager.invalidate_cache()
             return None
+
+    def _get_download_url_from_mirror(self, mirror: str, doi: str) -> tuple[Optional[str], bool]:
+        """Attempt to extract a PDF URL from a specific Sci-Hub mirror."""
+        formatted_doi = self.doi_processor.format_doi_for_url(doi) if doi.startswith("10.") else doi
+        scihub_url = f"{mirror}/{formatted_doi}"
+        logger.debug(f"[Sci-Hub] Accessing: {scihub_url}")
+
+        html_content, status_code = self.downloader.get_page_content(scihub_url)
+        if not html_content or status_code != 200:
+            if doi.startswith("10."):
+                fallback_url = f"{mirror}/{doi}"
+                logger.debug(f"[Sci-Hub] Trying fallback: {fallback_url}")
+                html_content, status_code = self.downloader.get_page_content(fallback_url)
+            if not html_content or status_code != 200:
+                logger.warning(f"[Sci-Hub] Failed to access page: {status_code}")
+                return None, False
+
+        download_url = self.parser.extract_download_url(html_content, mirror)
+        if not download_url and doi.startswith("10."):
+            fallback_url = f"{mirror}/{doi}"
+            logger.debug(f"[Sci-Hub] Extraction failed, trying fallback: {fallback_url}")
+            html_content, status_code = self.downloader.get_page_content(fallback_url)
+            if html_content and status_code == 200:
+                download_url = self.parser.extract_download_url(html_content, mirror)
+
+        if download_url:
+            return download_url, True
+        logger.warning(f"[Sci-Hub] Could not extract download URL for {doi} via {mirror}")
+        return None, True

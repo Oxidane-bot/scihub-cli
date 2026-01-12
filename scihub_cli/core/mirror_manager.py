@@ -79,9 +79,13 @@ class MirrorManager:
         """Invalidate cached mirror (call when mirror fails)."""
         if self._cached_mirror:
             logger.info(f"Invalidating cached mirror: {self._cached_mirror}")
-            # Add to blacklist
-            self._failed_mirrors[self._cached_mirror] = time.time()
-            logger.info(f"Added {self._cached_mirror} to blacklist for {self._blacklist_duration}s")
+            self.mark_failed(self._cached_mirror)
+
+    def mark_failed(self, mirror: str) -> None:
+        """Mark a mirror as failed and blacklist it temporarily."""
+        self._failed_mirrors[mirror] = time.time()
+        logger.info(f"Added {mirror} to blacklist for {self._blacklist_duration}s")
+        if mirror == self._cached_mirror:
             self._cached_mirror = None
             self._cache_time = None
 
