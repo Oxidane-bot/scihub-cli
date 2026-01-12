@@ -13,6 +13,7 @@ from .core.file_manager import FileManager
 from .core.mirror_manager import MirrorManager
 from .core.parser import ContentParser
 from .core.source_manager import SourceManager
+from .models import DownloadProgress, DownloadResult, ProgressCallback
 from .network.session import BasicSession
 from .sources.arxiv_source import ArxivSource
 from .sources.core_source import CORESource
@@ -95,7 +96,9 @@ class SciHubClient:
         else:
             self.source_manager = source_manager
 
-    def download_paper(self, identifier: str) -> Optional[str]:
+    def download_paper(
+        self, identifier: str, progress_callback: Optional[ProgressCallback] = None
+    ) -> DownloadResult:
         """
         Download a paper given its DOI or URL.
 
@@ -105,32 +108,103 @@ class SciHubClient:
         doi = self.doi_processor.normalize_doi(identifier)
         logger.info(f"Downloading paper: {doi}")
 
-        try:
-            return self._download_single_paper(doi)
-        except Exception as e:
-            logger.error(f"Failed to download {doi}: {e}")
-            return None
+        return self._download_single_paper(
+            identifier=identifier, normalized_identifier=doi, progress_callback=progress_callback
+        )
 
-    def _download_single_paper(self, doi: str) -> str:
+    def _download_single_paper(
+        self,
+        identifier: str,
+        normalized_identifier: str,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> DownloadResult:
         """
         Single download attempt using multi-source manager.
 
         Gets URL and metadata in one pass to avoid duplicate API calls.
         """
+        start_time = time.time()
+
+        def _build_result(
+            *,
+            success: bool,
+            file_path: Optional[str] = None,
+            file_size: Optional[int] = None,
+            metadata: Optional[dict] = None,
+            source: Optional[str] = None,
+            download_url: Optional[str] = None,
+            error: Optional[str] = None,
+        ) -> DownloadResult:
+            title = metadata.get("title") if isinstance(metadata, dict) else None
+            year = metadata.get("year") if isinstance(metadata, dict) else None
+            return DownloadResult(
+                identifier=identifier,
+                normalized_identifier=normalized_identifier,
+                success=success,
+                file_path=file_path,
+                file_size=file_size,
+                source=source,
+                metadata=metadata,
+                title=title,
+                year=year,
+                download_url=download_url,
+                download_time=time.time() - start_time,
+                error=error,
+            )
+
         # Get PDF URL and metadata together (avoids duplicate API calls)
-        download_url, metadata = self.source_manager.get_pdf_url_with_metadata(doi)
+        download_url, metadata, source = self.source_manager.get_pdf_url_with_metadata(
+            normalized_identifier
+        )
 
         if not download_url:
-            raise Exception(f"Could not find PDF URL for {doi} from any source")
+            error = f"Could not find PDF URL for {normalized_identifier} from any source"
+            logger.error(error)
+            return _build_result(
+                success=False,
+                metadata=metadata,
+                source=source,
+                error=error,
+            )
 
         logger.debug(f"Download URL: {download_url}")
 
         # Generate filename from metadata if available
-        filename = self._generate_filename(doi, metadata)
+        filename = self._generate_filename(normalized_identifier, metadata)
         output_path = self.file_manager.get_output_path(filename)
 
+        progress_state = {"bytes": 0, "total": None}
+
+        def _handle_progress(bytes_downloaded: int, total_bytes: Optional[int]) -> None:
+            progress_state["bytes"] = bytes_downloaded
+            progress_state["total"] = total_bytes
+            if progress_callback:
+                progress_callback(
+                    DownloadProgress(
+                        identifier=identifier,
+                        url=download_url,
+                        bytes_downloaded=bytes_downloaded,
+                        total_bytes=total_bytes,
+                        done=False,
+                    )
+                )
+
         # Download the PDF (with automatic retry at download layer)
-        success, error_msg = self.downloader.download_file(download_url, output_path)
+        success, error_msg = self.downloader.download_file(
+            download_url,
+            output_path,
+            progress_callback=_handle_progress if progress_callback else None,
+        )
+        if progress_callback:
+            progress_callback(
+                DownloadProgress(
+                    identifier=identifier,
+                    url=download_url,
+                    bytes_downloaded=progress_state["bytes"],
+                    total_bytes=progress_state["total"],
+                    done=True,
+                )
+            )
         if not success:
             # If Sci-Hub download failed, invalidate mirror cache
             if "sci-hub" in download_url.lower():
@@ -139,15 +213,38 @@ class SciHubClient:
                 if scihub:
                     scihub[0].mirror_manager.invalidate_cache()
 
-            raise Exception(error_msg)
+            error_msg = error_msg or "Download failed"
+            logger.error(f"Failed to download {normalized_identifier}: {error_msg}")
+            return _build_result(
+                success=False,
+                metadata=metadata,
+                source=source,
+                download_url=download_url,
+                error=error_msg,
+            )
 
         # Validate file
         if not self.file_manager.validate_file(output_path):
-            raise Exception("Downloaded file validation failed")
+            error = "Downloaded file validation failed"
+            logger.error(error)
+            return _build_result(
+                success=False,
+                metadata=metadata,
+                source=source,
+                download_url=download_url,
+                error=error,
+            )
 
         file_size = os.path.getsize(output_path)
-        logger.info(f"Successfully downloaded {doi} ({file_size} bytes)")
-        return output_path
+        logger.info(f"Successfully downloaded {normalized_identifier} ({file_size} bytes)")
+        return _build_result(
+            success=True,
+            file_path=output_path,
+            file_size=file_size,
+            metadata=metadata,
+            source=source,
+            download_url=download_url,
+        )
 
     def _generate_filename(self, doi: str, metadata: Optional[dict]) -> str:
         """
@@ -181,10 +278,14 @@ class SciHubClient:
         return self.file_manager.generate_filename(doi, html_content=None)
 
     def download_from_file(
-        self, input_file: str, parallel: int = None
-    ) -> list[tuple[str, Optional[str]]]:
+        self,
+        input_file: str,
+        parallel: int = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> list[DownloadResult]:
         """Download papers from a file containing DOIs or URLs."""
         parallel = parallel or settings.parallel
+        parallel = max(1, parallel)
 
         # Read input file
         try:
@@ -201,19 +302,38 @@ class SciHubClient:
 
         logger.info(f"Found {len(identifiers)} papers to download")
 
-        # Download each paper (sequential for now, can be parallelized later)
-        results = []
-        for i, identifier in enumerate(identifiers):
-            logger.info(f"Processing {i + 1}/{len(identifiers)}: {identifier}")
-            result = self.download_paper(identifier)
-            results.append((identifier, result))
+        if parallel == 1 or len(identifiers) <= 1:
+            results = []
+            for i, identifier in enumerate(identifiers):
+                logger.info(f"Processing {i + 1}/{len(identifiers)}: {identifier}")
+                result = self.download_paper(identifier, progress_callback=progress_callback)
+                results.append(result)
 
-            # Add a small delay between downloads
-            if i < len(identifiers) - 1:
-                time.sleep(2)
+                # Add a small delay between sequential downloads
+                if i < len(identifiers) - 1:
+                    time.sleep(2)
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        # Print summary
-        successful = sum(1 for _, result in results if result)
+            results: list[Optional[DownloadResult]] = [None] * len(identifiers)
+            workers = min(parallel, len(identifiers))
+            logger.info(f"Downloading {len(identifiers)} papers with {workers} workers")
+
+            def _download_one(index: int, identifier: str) -> tuple[int, DownloadResult]:
+                return index, self.download_paper(identifier, progress_callback=progress_callback)
+
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_index = {
+                    executor.submit(_download_one, index, identifier): index
+                    for index, identifier in enumerate(identifiers)
+                }
+                for future in as_completed(future_to_index):
+                    index, result = future.result()
+                    results[index] = result
+
+            results = [result for result in results if result is not None]
+
+        successful = sum(1 for result in results if result.success)
         logger.info(f"Downloaded {successful}/{len(identifiers)} papers")
 
         return results

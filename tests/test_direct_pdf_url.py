@@ -15,7 +15,9 @@ def _make_fake_pdf_bytes(size: int = 12000) -> bytes:
 
 
 class _FakeResponse:
-    def __init__(self, content: bytes, status_code: int = 200, content_type: str = "application/pdf"):
+    def __init__(
+        self, content: bytes, status_code: int = 200, content_type: str = "application/pdf"
+    ):
         self.status_code = status_code
         self.headers = {"Content-Type": content_type}
         self._content = content
@@ -55,9 +57,11 @@ def test_download_direct_pdf_url_offline(tmp_path: Path):
     )
 
     result = client.download_paper(url)
-    assert result, "Expected download to succeed for direct PDF URL"
-    assert Path(result).name == "EJ1358705.pdf"
+    assert result.success, "Expected download to succeed for direct PDF URL"
+    assert result.file_path
+    assert result.source == "Direct PDF"
+    assert Path(result.file_path).name == "EJ1358705.pdf"
 
-    data = Path(result).read_bytes()
+    data = Path(result.file_path).read_bytes()
     assert data[:4] == b"%PDF"
     assert len(data) >= 10000

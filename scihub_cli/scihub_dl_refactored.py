@@ -51,7 +51,7 @@ def main():
         "--parallel",
         type=int,
         default=settings.parallel,
-        help="Reserved; downloads are processed sequentially",
+        help="Number of parallel downloads (threads)",
     )
     parser.add_argument("--email", help="Email for Unpaywall API (saves to config file)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
@@ -86,11 +86,12 @@ def main():
         results = client.download_from_file(args.input_file, args.parallel)
 
         # Print failures if any
-        failures = [(identifier, result) for identifier, result in results if not result]
+        failures = [result for result in results if not result.success]
         if failures:
             logger.warning("The following papers failed to download:")
-            for identifier, _ in failures:
-                logger.warning(f"  - {identifier}")
+            for result in failures:
+                error = result.error or "Unknown error"
+                logger.warning(f"  - {result.identifier}: {error}")
 
         return 0 if len(failures) == 0 else 1
 

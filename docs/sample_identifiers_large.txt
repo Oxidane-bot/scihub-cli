@@ -1,0 +1,45 @@
+# Larger mixed list for speed/robustness checks.
+
+# arXiv (OA)
+https://arxiv.org/abs/1706.03762
+https://arxiv.org/abs/1810.04805
+https://arxiv.org/abs/1409.1556
+https://arxiv.org/abs/1512.03385
+https://arxiv.org/abs/1502.03167
+https://arxiv.org/abs/1312.6114
+https://arxiv.org/abs/1202.2745
+https://arxiv.org/abs/1607.06450
+https://arxiv.org/abs/2005.14165
+https://arxiv.org/abs/2203.02155
+https://arxiv.org/abs/2302.13971
+https://arxiv.org/abs/2307.09288
+
+# Direct PDF
+https://arxiv.org/pdf/1706.03762.pdf
+https://arxiv.org/pdf/1409.1556.pdf
+https://arxiv.org/pdf/1512.03385.pdf
+https://files.eric.ed.gov/fulltext/EJ1358705.pdf
+
+# PMC / Europe PMC
+https://europepmc.org/articles/PMC6505544?pdf=render
+
+# OA DOI (requires Unpaywall email for best results)
+10.1371/journal.pone.0250916
+10.1371/journal.pone.0276202
+10.7717/peerj.4375
+
+# Sci-Hub targeted (older, likely paywalled)
+10.1038/323533a0
+10.1038/nature14539
+10.1109/34.868688
+10.1145/1390156.1390177
+10.1126/science.169.3946.635
+10.1038/35042521
+10.1109/5.771073
+10.1007/BF01394563
+10.1016/0031-9384(95)00091-3
+10.1016/S0167-2789(98)00078-6
+
+# Expected failures (robustness)
+https://example.org/does-not-exist.pdf
+10.9999/this-doi-does-not-exist

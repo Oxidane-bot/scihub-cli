@@ -206,7 +206,7 @@ options:
   -r RETRIES, --retries RETRIES
                         Number of retries for failed downloads (default: 3)
   -p PARALLEL, --parallel PARALLEL
-                        Reserved; downloads are processed sequentially
+                        Number of parallel downloads (threads)
   --email EMAIL         Email for Unpaywall API (saves to config file)
   -v, --verbose         Enable verbose logging
   --version             show program's version number and exit

@@ -28,7 +28,9 @@ def _make_fake_pdf_bytes(size: int = 12000) -> bytes:
 
 
 class _FakeResponse:
-    def __init__(self, content: bytes, status_code: int = 200, content_type: str = "application/pdf"):
+    def __init__(
+        self, content: bytes, status_code: int = 200, content_type: str = "application/pdf"
+    ):
         self.status_code = status_code
         self.headers = {"Content-Type": content_type}
         self._content = content
@@ -115,6 +117,7 @@ def test_client_download_from_html_landing_offline(tmp_path: Path):
     )
 
     result = client.download_paper(landing_url)
-    assert result, "Expected download to succeed for HTML landing page URL"
-    assert Path(result).exists()
-    assert Path(result).read_bytes()[:4] == b"%PDF"
+    assert result.success, "Expected download to succeed for HTML landing page URL"
+    assert result.file_path
+    assert Path(result.file_path).exists()
+    assert Path(result.file_path).read_bytes()[:4] == b"%PDF"

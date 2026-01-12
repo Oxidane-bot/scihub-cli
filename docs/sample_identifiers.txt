@@ -1,0 +1,24 @@
+# arXiv (OA)
+https://arxiv.org/abs/1706.03762
+https://arxiv.org/abs/1810.04805
+https://arxiv.org/abs/1409.1556
+https://arxiv.org/abs/1512.03385
+
+# Direct PDF / PMC
+https://files.eric.ed.gov/fulltext/EJ1358705.pdf
+https://europepmc.org/articles/PMC6505544?pdf=render
+
+# DOI (OA)
+10.1371/journal.pone.0250916
+10.1371/journal.pone.0276202
+
+# Sci-Hub targeted (older, likely paywalled)
+10.1038/323533a0
+10.1038/nature14539
+10.1109/34.868688
+10.1145/1390156.1390177
+10.1126/science.169.3946.635
+10.1007/BF01394563
+
+# Broken link (robustness)
+https://example.org/does-not-exist.pdf

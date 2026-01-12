@@ -139,12 +139,12 @@ class SourceManager:
         Returns:
             PDF URL if found, None otherwise
         """
-        pdf_url, _metadata = self.get_pdf_url_with_metadata(doi, year)
+        pdf_url, _metadata, _source = self.get_pdf_url_with_metadata(doi, year)
         return pdf_url
 
     def get_pdf_url_with_metadata(
         self, doi: str, year: Optional[int] = None
-    ) -> tuple[Optional[str], Optional[dict]]:
+    ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
         """
         Get PDF URL and metadata in one pass (avoids duplicate API calls).
 
@@ -155,7 +155,7 @@ class SourceManager:
             year: Publication year (optional, will be detected)
 
         Returns:
-            Tuple of (pdf_url, metadata) - both can be None
+            Tuple of (pdf_url, metadata, source) - all can be None
         """
         chain = self.get_source_chain(doi, year)
 
@@ -165,7 +165,7 @@ class SourceManager:
 
     def _query_sources_fast_then_slow(
         self, doi: str, chain: list[PaperSource]
-    ) -> tuple[Optional[str], Optional[dict]]:
+    ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
         """
         Query fast sources in parallel first, then fall back to slow sources sequentially.
 
@@ -176,11 +176,11 @@ class SourceManager:
 
         if fast_chain:
             if len(fast_chain) > 1:
-                pdf_url, metadata = self._query_sources_parallel(doi, fast_chain)
+                pdf_url, metadata, source = self._query_sources_parallel(doi, fast_chain)
             else:
-                pdf_url, metadata = self._query_sources_sequential(doi, fast_chain)
+                pdf_url, metadata, source = self._query_sources_sequential(doi, fast_chain)
             if pdf_url:
-                return pdf_url, metadata
+                return pdf_url, metadata, source
 
         if slow_chain:
             logger.info(
@@ -188,11 +188,11 @@ class SourceManager:
             )
             return self._query_sources_sequential(doi, slow_chain)
 
-        return None, None
+        return None, None, None
 
     def _query_sources_sequential(
         self, doi: str, chain: list[PaperSource]
-    ) -> tuple[Optional[str], Optional[dict]]:
+    ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
         """Query sources sequentially (fallback mode)."""
         for source in chain:
             if not source.can_handle(doi):
@@ -213,7 +213,9 @@ class SourceManager:
                         except Exception as e:
                             logger.debug(f"[Router] Failed to get metadata from {source.name}: {e}")
 
-                    return pdf_url, metadata
+                    if isinstance(metadata, dict):
+                        metadata.setdefault("source", source.name)
+                    return pdf_url, metadata, source.name
                 else:
                     logger.info(f"[Router] {source.name} did not find PDF, trying next source...")
             except Exception as e:
@@ -221,11 +223,11 @@ class SourceManager:
                 continue
 
         logger.warning(f"[Router] All sources failed for {doi}")
-        return None, None
+        return None, None, None
 
     def _query_sources_parallel(
         self, doi: str, chain: list[PaperSource]
-    ) -> tuple[Optional[str], Optional[dict]]:
+    ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
         """
         Query multiple sources in parallel, return first successful result.
 
@@ -240,7 +242,7 @@ class SourceManager:
             chain: Ordered list of sources (priority order)
 
         Returns:
-            Tuple of (pdf_url, metadata) - both can be None
+            Tuple of (pdf_url, metadata, source) - all can be None
         """
         source_names = [s.name for s in chain]
         logger.info(f"[Router] Parallel query to {len(chain)} sources: {source_names}")
@@ -266,6 +268,8 @@ class SourceManager:
                     with contextlib.suppress(Exception):
                         metadata = source.get_metadata(doi)
 
+                if isinstance(metadata, dict):
+                    metadata.setdefault("source", source.name)
                 return source.name, pdf_url, metadata
             except Exception as e:
                 logger.debug(f"[Router] {source.name} parallel query error: {e}")
@@ -299,7 +303,7 @@ class SourceManager:
                                 logger.info(
                                     f"[Router] SUCCESS: Using {source_name} (parallel, priority)"
                                 )
-                                return pdf_url, metadata
+                                return pdf_url, metadata, source_name
                             elif priority_source.name in results:
                                 # A higher priority source already has a result
                                 break
@@ -321,10 +325,10 @@ class SourceManager:
                 pdf_url, metadata = results[source.name]
                 if pdf_url:
                     logger.info(f"[Router] SUCCESS: Using {source.name} (parallel, best available)")
-                    return pdf_url, metadata
+                    return pdf_url, metadata, source.name
 
         logger.warning(f"[Router] All sources failed for {doi} (parallel)")
-        return None, None
+        return None, None, None
 
     def _get_year_smart(self, doi: str) -> Optional[int]:
         """

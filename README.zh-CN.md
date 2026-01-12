@@ -183,7 +183,7 @@ scihub-cli papers.txt --email your-email@university.edu
   -r RETRIES, --retries RETRIES
                         下载失败时的重试次数（默认: 3）
   -p PARALLEL, --parallel PARALLEL
-                        预留参数，当前顺序下载
+                        并行下载线程数
   --email EMAIL         Unpaywall API 邮箱（会保存到配置文件）
   -v, --verbose         启用详细日志
   --version             显示程序版本号并退出

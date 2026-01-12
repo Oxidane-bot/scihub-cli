@@ -100,18 +100,20 @@ def test_download_multi_source():
             print(f"DOI: {doi}")
 
             result = client.download_paper(doi)
-            if result:
-                file_size = os.path.getsize(result)
-                print(f"SUCCESS: {result} ({file_size} bytes)")
+            if result.success:
+                assert result.file_path
+                file_size = os.path.getsize(result.file_path)
+                print(f"SUCCESS: {result.file_path} ({file_size} bytes)")
 
                 # Verify PDF header
-                with open(result, "rb") as f:
+                with open(result.file_path, "rb") as f:
                     header = f.read(4)
                     is_valid_pdf = header == b"%PDF"
                     print(f"Valid PDF: {is_valid_pdf}")
-                    assert is_valid_pdf, f"Downloaded file is not a valid PDF: {result}"
-                    results.append(True)
+                    assert is_valid_pdf, f"Downloaded file is not a valid PDF: {result.file_path}"
+                results.append(True)
             else:
+                print(f"FAILED: {result.error}")
                 results.append(False)
 
         assert all(results), f"OA downloads failed: {sum(results)}/{len(results)} successful"

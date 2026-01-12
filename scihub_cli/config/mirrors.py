@@ -18,18 +18,12 @@ class MirrorConfig:
     # Mirror configuration by difficulty level
     MIRROR_TIERS = {
         MirrorTier.EASY: [  # No Cloudflare protection, use basic requests
-            "https://sci-hub.tf",  # Alternative domain
-            "https://sci-hub.ru",
-            "https://sci-hub.shop",  # Alternative domain
-            "https://www.sci-hub.ee",
-            "https://sci-hub.mksa.top",  # Alternative domain
+            "https://sci-hub.mk",
             "https://sci-hub.ren",
-            "https://sci-hub.do",  # Alternative domain
+            "https://sci-hub.vg",
+            "https://sci-hub.ee",
         ],
-        MirrorTier.HARD: [  # Strong Cloudflare protection, needs advanced bypass
-            "https://sci-hub.st",  # Cloudflare/403-protected
-            "https://sci-hub.se",  # The final boss
-        ],
+        MirrorTier.HARD: [],  # Cloudflare-protected mirrors removed by default
     }
 
     @classmethod

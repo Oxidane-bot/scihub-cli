@@ -3,7 +3,7 @@ Core downloader implementation with single responsibility.
 """
 
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -34,7 +34,12 @@ class FileDownloader:
         self._last_bypass_time = {}  # domain -> timestamp
         self._bypass_delay = 2.0  # seconds between bypass requests to same domain
 
-    def download_file(self, url: str, output_path: str) -> tuple[bool, Optional[str]]:
+    def download_file(
+        self,
+        url: str,
+        output_path: str,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+    ) -> tuple[bool, Optional[str]]:
         """
         Download a file from URL to output path with automatic retry.
 
@@ -54,7 +59,7 @@ class FileDownloader:
             os.makedirs(output_dir, exist_ok=True)
 
         def _attempt_download():
-            return self._download_once(url, output_path)
+            return self._download_once(url, output_path, progress_callback)
 
         try:
             return retry_with_classification(
@@ -65,7 +70,9 @@ class FileDownloader:
             error_msg = str(e)
             if "403" in error_msg:
                 logger.warning("Got 403 error, attempting curl_cffi bypass...")
-                success, bypass_error = self._download_with_curl_cffi(url, output_path)
+                success, bypass_error = self._download_with_curl_cffi(
+                    url, output_path, progress_callback
+                )
                 if success:
                     logger.info("Successfully downloaded using curl_cffi bypass")
                     return True, None
@@ -118,7 +125,12 @@ class FileDownloader:
                 if callable(close):
                     close()
 
-    def _download_once(self, url: str, output_path: str) -> tuple[bool, Optional[str]]:
+    def _download_once(
+        self,
+        url: str,
+        output_path: str,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+    ) -> tuple[bool, Optional[str]]:
         """
         Single download attempt with error classification.
 
@@ -155,12 +167,18 @@ class FileDownloader:
 
             # Download to temporary location first
             temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
+            total_header = response.headers.get("Content-Length")
+            total_bytes = int(total_header) if total_header and total_header.isdigit() else None
+            bytes_downloaded = 0
 
             try:
                 with os.fdopen(temp_fd, "wb") as f:
                     for chunk in response.iter_content(chunk_size=settings.CHUNK_SIZE):
                         if chunk:
                             f.write(chunk)
+                            bytes_downloaded += len(chunk)
+                            if progress_callback:
+                                progress_callback(bytes_downloaded, total_bytes)
 
                 # Verify it's actually a PDF by checking file header
                 with open(temp_path, "rb") as f:
@@ -197,7 +215,12 @@ class FileDownloader:
             # Unknown errors are considered retryable (conservative)
             raise RetryableError(f"Download error: {e}") from e
 
-    def _download_with_curl_cffi(self, url: str, output_path: str) -> tuple[bool, Optional[str]]:
+    def _download_with_curl_cffi(
+        self,
+        url: str,
+        output_path: str,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+    ) -> tuple[bool, Optional[str]]:
         """
         Bypass CDN protection using curl_cffi with browser impersonation.
 
@@ -256,6 +279,8 @@ class FileDownloader:
             try:
                 with os.fdopen(temp_fd, "wb") as f:
                     f.write(response.content)
+                if progress_callback:
+                    progress_callback(len(response.content), len(response.content))
 
                 # Verify it's actually a PDF
                 with open(temp_path, "rb") as f:

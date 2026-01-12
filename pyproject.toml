@@ -32,6 +32,12 @@ packages = ["scihub_cli"]
 [tool.setuptools.package-data]
 scihub_cli = ["py.typed"] 
 
+[tool.setuptools.exclude-package-data]
+"*" = ["*.pyc", "*.pyo", "__pycache__/*"]
+
+[tool.setuptools.cmdclass]
+build_py = "scihub_cli.build.NoBytecodeBuildPy"
+
 [dependency-groups]
 dev = [
     "ruff>=0.14.8",
