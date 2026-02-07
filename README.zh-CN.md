@@ -92,7 +92,7 @@ uvx scihub-cli papers.txt
 
 如果您在安装过程中遇到问题，请尝试以下方法：
 
-1. 确保您安装了Python 3.9+：
+1. 确保您安装了Python 3.10+：
    ```
    python --version
    ```
@@ -180,10 +180,17 @@ scihub-cli papers.txt --email your-email@university.edu
                         指定要使用的Sci-Hub镜像站点
   -t TIMEOUT, --timeout TIMEOUT
                         请求超时时间（秒）（默认: 15）
-  -r RETRIES, --retries RETRIES
+ -r RETRIES, --retries RETRIES
                         下载失败时的重试次数（默认: 3）
   -p PARALLEL, --parallel PARALLEL
                         并行下载线程数
+  --to-md              下载后将 PDF 转为 Markdown
+  --md-output MD_OUTPUT
+                        Markdown 输出目录（默认: <pdf_output>/md）
+  --md-backend MD_BACKEND
+                        转换后端（默认: pymupdf4llm）
+  --md-overwrite        覆盖已存在的 Markdown 文件
+  --md-warn-only        Markdown 转换失败时仅警告（不影响退出码）
   --email EMAIL         Unpaywall API 邮箱（会保存到配置文件）
   -v, --verbose         启用详细日志
   --version             显示程序版本号并退出
@@ -194,6 +201,13 @@ scihub-cli papers.txt --email your-email@university.edu
 ```bash
 # 基本用法
 scihub-cli papers.txt
+
+# 下载后自动转 Markdown
+# 默认输出目录: <pdf_output_dir>/md
+scihub-cli --to-md papers.txt
+
+# 自定义 Markdown 输出目录
+scihub-cli --to-md --md-output research/markdown papers.txt
 
 # 指定输出目录
 scihub-cli -o research/papers papers.txt

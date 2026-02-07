@@ -7,6 +7,7 @@ import time
 from typing import Optional
 
 from .config.settings import settings
+from .converters.pdf_to_md import PdfToMarkdownConverter
 from .core.doi_processor import DOIProcessor
 from .core.downloader import FileDownloader
 from .core.file_manager import FileManager
@@ -43,6 +44,12 @@ class SciHubClient:
         file_manager: FileManager = None,
         downloader: FileDownloader = None,
         source_manager: SourceManager = None,
+        convert_to_md: bool = False,
+        md_output_dir: str | None = None,
+        md_backend: str = "pymupdf4llm",
+        md_strict: bool = True,
+        md_overwrite: bool = False,
+        md_converter: PdfToMarkdownConverter | None = None,
     ):
         """Initialize client with optional dependency injection."""
 
@@ -51,6 +58,13 @@ class SciHubClient:
         self.timeout = timeout or settings.timeout
         self.retry_config = RetryConfig(max_attempts=retries or settings.retries)
         self.email = email or settings.email
+
+        self.convert_to_md = convert_to_md
+        self.md_output_dir = md_output_dir
+        self.md_backend = md_backend
+        self.md_strict = md_strict
+        self.md_overwrite = md_overwrite
+        self.md_converter = md_converter
 
         # Dependency injection with defaults
         self.mirror_manager = mirror_manager or MirrorManager(mirrors, self.timeout)
@@ -134,6 +148,9 @@ class SciHubClient:
             source: Optional[str] = None,
             download_url: Optional[str] = None,
             error: Optional[str] = None,
+            md_path: str | None = None,
+            md_success: bool | None = None,
+            md_error: str | None = None,
         ) -> DownloadResult:
             title = metadata.get("title") if isinstance(metadata, dict) else None
             year = metadata.get("year") if isinstance(metadata, dict) else None
@@ -150,6 +167,9 @@ class SciHubClient:
                 download_url=download_url,
                 download_time=time.time() - start_time,
                 error=error,
+                md_path=md_path,
+                md_success=md_success,
+                md_error=md_error,
             )
 
         # Get PDF URL and metadata together (avoids duplicate API calls)
@@ -235,6 +255,16 @@ class SciHubClient:
                 error=error,
             )
 
+        md_path: str | None = None
+        md_success: bool | None = None
+        md_error: str | None = None
+        if self.convert_to_md:
+            try:
+                md_path, md_success, md_error = self._convert_pdf_to_markdown(output_path)
+            except Exception as e:
+                md_success = False
+                md_error = str(e)
+
         file_size = os.path.getsize(output_path)
         logger.info(f"Successfully downloaded {normalized_identifier} ({file_size} bytes)")
         return _build_result(
@@ -244,7 +274,43 @@ class SciHubClient:
             metadata=metadata,
             source=source,
             download_url=download_url,
+            md_path=md_path,
+            md_success=md_success,
+            md_error=md_error,
         )
+
+    def _convert_pdf_to_markdown(
+        self, pdf_path: str
+    ) -> tuple[str | None, bool | None, str | None]:
+        from pathlib import Path
+
+        from .converters.pdf_to_md import MarkdownConvertOptions
+
+        pdf = Path(pdf_path)
+        output_dir = Path(self.md_output_dir) if self.md_output_dir else pdf.parent / "md"
+        md_path = output_dir / f"{pdf.stem}.md"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        if md_path.exists() and not self.md_overwrite:
+            return str(md_path), True, None
+
+        backend = (self.md_backend or "pymupdf4llm").lower().strip()
+        converter = self.md_converter
+        if converter is None:
+            if backend != "pymupdf4llm":
+                return str(md_path), False, f"Unsupported markdown backend: {self.md_backend}"
+            from .converters.pymupdf4llm_converter import Pymupdf4llmConverter
+
+            converter = Pymupdf4llmConverter()
+
+        ok, error = converter.convert(
+            str(pdf),
+            str(md_path),
+            options=MarkdownConvertOptions(overwrite=self.md_overwrite),
+        )
+        if not ok:
+            return str(md_path), False, error or "Markdown conversion failed"
+        return str(md_path), True, None
 
     def _generate_filename(self, doi: str, metadata: Optional[dict]) -> str:
         """

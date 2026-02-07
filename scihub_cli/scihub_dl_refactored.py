@@ -53,6 +53,30 @@ def main():
         default=settings.parallel,
         help="Number of parallel downloads (threads)",
     )
+    parser.add_argument(
+        "--to-md",
+        action="store_true",
+        help="Convert downloaded PDFs to Markdown",
+    )
+    parser.add_argument(
+        "--md-output",
+        help="Output directory for generated Markdown (default: <pdf_output>/md)",
+    )
+    parser.add_argument(
+        "--md-backend",
+        default="pymupdf4llm",
+        help="Markdown conversion backend (default: pymupdf4llm)",
+    )
+    parser.add_argument(
+        "--md-overwrite",
+        action="store_true",
+        help="Overwrite existing Markdown files",
+    )
+    parser.add_argument(
+        "--md-warn-only",
+        action="store_true",
+        help="Do not fail the run if Markdown conversion fails",
+    )
     parser.add_argument("--email", help="Email for Unpaywall API (saves to config file)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--version", action="version", version=f"scihub-cli v{__version__}")
@@ -73,12 +97,23 @@ def main():
 
     # Initialize client with parameters
     mirrors = [args.mirror] if args.mirror else None
+    md_output_dir = args.md_output
+    if args.to_md and not md_output_dir:
+        import os
+
+        md_output_dir = os.path.join(args.output, "md")
+
     client = SciHubClient(
         output_dir=args.output,
         mirrors=mirrors,
         timeout=args.timeout,
         retries=args.retries,
         email=email,
+        convert_to_md=args.to_md,
+        md_output_dir=md_output_dir,
+        md_backend=args.md_backend,
+        md_strict=not args.md_warn_only,
+        md_overwrite=args.md_overwrite,
     )
 
     # Download papers
@@ -93,7 +128,18 @@ def main():
                 error = result.error or "Unknown error"
                 logger.warning(f"  - {result.identifier}: {error}")
 
-        return 0 if len(failures) == 0 else 1
+        strict_md = args.to_md and not args.md_warn_only
+        md_failures = [result for result in results if result.success and result.md_success is False]
+        if md_failures:
+            logger.warning("The following papers failed to convert to Markdown:")
+            for result in md_failures:
+                error = result.md_error or "Unknown error"
+                logger.warning(f"  - {result.identifier}: {error}")
+
+        exit_code = 0 if len(failures) == 0 else 1
+        if strict_md and md_failures:
+            exit_code = 1
+        return exit_code
 
     except Exception as e:
         logger.error(f"An error occurred: {e}")

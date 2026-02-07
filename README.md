@@ -89,7 +89,7 @@ If you prefer to run directly from source:
 
 If you encounter issues with the installation, try the following:
 
-1. Ensure you have Python 3.9+ installed:
+1. Ensure you have Python 3.10+ installed:
    ```bash
    python --version
    ```
@@ -207,6 +207,13 @@ options:
                         Number of retries for failed downloads (default: 3)
   -p PARALLEL, --parallel PARALLEL
                         Number of parallel downloads (threads)
+  --to-md              Convert downloaded PDFs to Markdown
+  --md-output MD_OUTPUT
+                        Output directory for generated Markdown (default: <pdf_output>/md)
+  --md-backend MD_BACKEND
+                        Markdown conversion backend (default: pymupdf4llm)
+  --md-overwrite        Overwrite existing Markdown files
+  --md-warn-only        Do not fail the run if Markdown conversion fails
   --email EMAIL         Email for Unpaywall API (saves to config file)
   -v, --verbose         Enable verbose logging
   --version             show program's version number and exit
@@ -229,6 +236,13 @@ You can edit this file directly or use `--email` to update it.
 ```bash
 # Basic usage
 scihub-cli papers.txt
+
+# Download PDFs and convert them to Markdown
+# Default markdown output: <pdf_output_dir>/md
+scihub-cli --to-md papers.txt
+
+# Custom markdown output directory
+scihub-cli --to-md --md-output research/markdown papers.txt
 
 # Specify output directory
 scihub-cli -o research/papers papers.txt

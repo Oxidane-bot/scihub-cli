@@ -40,6 +40,11 @@ sci-hub-page.html
 *.log
 prd.md
 
+# Local docs artifacts
+docs/_local/
+docs/e2e_*.txt
+docs/e2e_out/
+
 # 测试文件和用户数据
 dois.txt
 test*.txt

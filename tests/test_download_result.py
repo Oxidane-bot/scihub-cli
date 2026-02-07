@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from scihub_cli.client import SciHubClient
+from scihub_cli.converters.pdf_to_md import MarkdownConvertOptions
 from scihub_cli.core.downloader import FileDownloader
 from scihub_cli.core.source_manager import SourceManager
 from scihub_cli.models import DownloadProgress
@@ -58,6 +59,20 @@ class _StubSource(PaperSource):
 
     def get_metadata(self, doi: str) -> dict[str, str]:  # noqa: ARG002
         return {"title": "Example Title", "year": 2020}
+
+
+class _StubConverter:
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+
+    def convert(
+        self, pdf_path: str, md_path: str, *, options: MarkdownConvertOptions
+    ) -> tuple[bool, str | None]:
+        del options
+        if self.fail:
+            return False, "conversion failed"
+        Path(md_path).write_text(f"converted: {pdf_path}\n", encoding="utf-8")
+        return True, None
 
 
 def test_download_result_includes_metadata_and_progress(tmp_path: Path):
@@ -120,3 +135,55 @@ def test_parallel_download_from_file(tmp_path: Path):
     assert [result.identifier for result in results] == urls
     assert all(result.success for result in results)
     assert all(result.file_path and Path(result.file_path).exists() for result in results)
+
+
+def test_pdf_to_markdown_postprocess(tmp_path: Path):
+    pdf_url = "https://example.org/paper.pdf"
+    session = _FakeSession({pdf_url: _make_fake_pdf_bytes()})
+    downloader = FileDownloader(session=session, timeout=5)  # type: ignore[arg-type]
+
+    source_manager = SourceManager(sources=[_StubSource()], enable_year_routing=False)
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        downloader=downloader,
+        source_manager=source_manager,
+        convert_to_md=True,
+        md_output_dir=str(tmp_path / "md"),
+        md_converter=_StubConverter(),
+    )
+
+    result = client.download_paper("10.1234/abc")
+
+    assert result.success
+    assert result.file_path
+    assert result.md_success is True
+    assert result.md_path
+    assert Path(result.md_path).exists()
+
+
+def test_pdf_to_markdown_failure_sets_fields(tmp_path: Path):
+    pdf_url = "https://example.org/paper.pdf"
+    session = _FakeSession({pdf_url: _make_fake_pdf_bytes()})
+    downloader = FileDownloader(session=session, timeout=5)  # type: ignore[arg-type]
+
+    source_manager = SourceManager(sources=[_StubSource()], enable_year_routing=False)
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        downloader=downloader,
+        source_manager=source_manager,
+        convert_to_md=True,
+        md_output_dir=str(tmp_path / "md"),
+        md_converter=_StubConverter(fail=True),
+    )
+
+    result = client.download_paper("10.1234/abc")
+
+    assert result.success
+    assert result.file_path
+    assert result.md_success is False
+    assert result.md_path
+    assert result.md_error
