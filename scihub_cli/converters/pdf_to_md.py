@@ -24,4 +24,3 @@ class PdfToMarkdownConverter(Protocol):
         Returns:
             (success, error_message)
         """
-

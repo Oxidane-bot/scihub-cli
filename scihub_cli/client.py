@@ -279,9 +279,7 @@ class SciHubClient:
             md_error=md_error,
         )
 
-    def _convert_pdf_to_markdown(
-        self, pdf_path: str
-    ) -> tuple[str | None, bool | None, str | None]:
+    def _convert_pdf_to_markdown(self, pdf_path: str) -> tuple[str | None, bool | None, str | None]:
         from pathlib import Path
 
         from .converters.pdf_to_md import MarkdownConvertOptions

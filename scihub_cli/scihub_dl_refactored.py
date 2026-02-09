@@ -129,7 +129,9 @@ def main():
                 logger.warning(f"  - {result.identifier}: {error}")
 
         strict_md = args.to_md and not args.md_warn_only
-        md_failures = [result for result in results if result.success and result.md_success is False]
+        md_failures = [
+            result for result in results if result.success and result.md_success is False
+        ]
         if md_failures:
             logger.warning("The following papers failed to convert to Markdown:")
             for result in md_failures:
