@@ -27,6 +27,13 @@ A command-line tool for batch downloading academic papers with multi-source supp
 - Progress reporting
 - **Metadata-based Filenames**: Automatically names files as `[YYYY] - [Title].pdf` for easy organization
 
+## Recent Updates
+
+### v0.4.1
+
+- Improved `--to-md` stability by serializing Markdown conversion internally, reducing random converter crashes under parallel downloads
+- Added release guidance for stale `uv tool` environments that may still run old converter code
+
 ## Installation
 
 [uv](https://docs.astral.sh/uv/) is an extremely fast Python package and project manager, written in Rust.
@@ -129,6 +136,11 @@ If you encounter issues with the installation, try the following:
    # Reinstall
    uv tool uninstall scihub-cli
    uv tool install scihub-cli
+   ```
+
+6. If `--to-md` still behaves like an old version after upgrade, force refresh the local tool environment:
+   ```bash
+   uv tool install --force --reinstall --refresh .
    ```
 
 ## Usage

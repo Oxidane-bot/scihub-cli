@@ -27,6 +27,13 @@
 - 下载进度报告
 - **基于元数据的文件名**: 自动命名为 `[年份] - [标题].pdf` 便于整理
 
+## 最近更新
+
+### v0.4.1
+
+- 提升 `--to-md` 稳定性：Markdown 转换在内部串行执行，降低并行下载下随机转换崩溃的概率
+- 增加旧版 `uv tool` 环境的升级说明，避免工具缓存导致仍运行旧转换逻辑
+
 ## 安装方法
 
 [uv](https://docs.astral.sh/uv/) 是一个用Rust编写的极速Python包和项目管理器。
@@ -118,6 +125,11 @@ uvx scihub-cli papers.txt
    
    # 在macOS/Linux上
    source ~/.bashrc  # 或 .zshrc, .bash_profile 等
+   ```
+
+5. 如果升级后 `--to-md` 表现仍像旧版本，请强制刷新本地工具环境：
+   ```
+   uv tool install --force --reinstall --refresh .
    ```
 
 ## 使用方法
