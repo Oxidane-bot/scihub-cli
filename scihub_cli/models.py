@@ -39,3 +39,5 @@ class DownloadResult:
     md_path: str | None = None
     md_success: bool | None = None
     md_error: str | None = None
+    source_attempts: list[dict[str, Any]] | None = None
+    html_snapshots: list[dict[str, Any]] | None = None

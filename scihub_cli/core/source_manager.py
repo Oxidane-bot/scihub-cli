@@ -3,14 +3,19 @@ Multi-source manager with intelligent routing and parallel querying.
 """
 
 import contextlib
+import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from ..sources.base import PaperSource
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+SourceAttempt = dict[str, Any]
+HtmlSnapshotCallback = Callable[[dict[str, Any]], None]
 
 # Configuration for parallel source queries
 PARALLEL_QUERY_WORKERS = 4  # Max concurrent source queries
@@ -157,15 +162,48 @@ class SourceManager:
         Returns:
             Tuple of (pdf_url, metadata, source) - all can be None
         """
+        pdf_url, metadata, source, _attempts = self.get_pdf_url_with_metadata_and_trace(doi, year)
+        return pdf_url, metadata, source
+
+    def get_pdf_url_with_metadata_and_trace(
+        self,
+        doi: str,
+        year: Optional[int] = None,
+        html_snapshot_callback: HtmlSnapshotCallback | None = None,
+    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[SourceAttempt]]:
+        """
+        Get PDF URL/metadata and source-attempt trace in one pass.
+
+        Args:
+            doi: The DOI to look up
+            year: Publication year (optional, will be detected)
+            html_snapshot_callback: Optional callback for HTML page snapshots
+
+        Returns:
+            Tuple of (pdf_url, metadata, source, source_attempts)
+        """
         chain = self.get_source_chain(doi, year)
 
         if PARALLEL_QUERY_ENABLED and len(chain) > 1:
-            return self._query_sources_fast_then_slow(doi, chain)
-        return self._query_sources_sequential(doi, chain)
+            return self._query_sources_fast_then_slow(
+                doi,
+                chain,
+                html_snapshot_callback=html_snapshot_callback,
+            )
+        return self._query_sources_sequential(
+            doi,
+            chain,
+            phase="sequential",
+            html_snapshot_callback=html_snapshot_callback,
+        )
 
     def _query_sources_fast_then_slow(
-        self, doi: str, chain: list[PaperSource]
-    ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
+        self,
+        doi: str,
+        chain: list[PaperSource],
+        *,
+        html_snapshot_callback: HtmlSnapshotCallback | None = None,
+    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[SourceAttempt]]:
         """
         Query fast sources in parallel first, then fall back to slow sources sequentially.
 
@@ -173,61 +211,119 @@ class SourceManager:
         """
         fast_chain = [source for source in chain if source.name not in SLOW_SOURCES]
         slow_chain = [source for source in chain if source.name in SLOW_SOURCES]
+        attempts: list[SourceAttempt] = []
 
         if fast_chain:
             if len(fast_chain) > 1:
-                pdf_url, metadata, source = self._query_sources_parallel(doi, fast_chain)
+                pdf_url, metadata, source, fast_attempts = self._query_sources_parallel(
+                    doi,
+                    fast_chain,
+                    phase="fast_parallel",
+                    html_snapshot_callback=html_snapshot_callback,
+                )
             else:
-                pdf_url, metadata, source = self._query_sources_sequential(doi, fast_chain)
+                pdf_url, metadata, source, fast_attempts = self._query_sources_sequential(
+                    doi,
+                    fast_chain,
+                    phase="fast_sequential",
+                    html_snapshot_callback=html_snapshot_callback,
+                )
+            attempts.extend(fast_attempts)
             if pdf_url:
-                return pdf_url, metadata, source
+                return pdf_url, metadata, source, attempts
 
         if slow_chain:
             logger.info(
                 f"[Router] Fast sources exhausted, trying slow sources: {[s.name for s in slow_chain]}"
             )
-            return self._query_sources_sequential(doi, slow_chain)
+            pdf_url, metadata, source, slow_attempts = self._query_sources_sequential(
+                doi,
+                slow_chain,
+                phase="slow_sequential",
+                html_snapshot_callback=html_snapshot_callback,
+            )
+            attempts.extend(slow_attempts)
+            return pdf_url, metadata, source, attempts
 
-        return None, None, None
+        return None, None, None, attempts
 
     def _query_sources_sequential(
-        self, doi: str, chain: list[PaperSource]
-    ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
+        self,
+        doi: str,
+        chain: list[PaperSource],
+        *,
+        phase: str,
+        html_snapshot_callback: HtmlSnapshotCallback | None = None,
+    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[SourceAttempt]]:
         """Query sources sequentially (fallback mode)."""
-        for source in chain:
-            if not source.can_handle(doi):
-                logger.debug(f"[Router] Skipping {source.name} (cannot handle identifier)")
-                continue
+        attempts: list[SourceAttempt] = []
+
+        for priority, source in enumerate(chain, start=1):
+            started_at = time.time()
+            attempt: SourceAttempt = {
+                "source": source.name,
+                "phase": phase,
+                "priority": priority,
+                "started_at": started_at,
+                "status": "unknown",
+            }
+            metadata = None
+            pdf_url = None
 
             try:
-                logger.info(f"[Router] Trying {source.name} for {doi}...")
-                pdf_url = source.get_pdf_url(doi)
-                if pdf_url:
-                    logger.info(f"[Router] SUCCESS: Found PDF via {source.name}")
-
-                    # Get metadata from same source (will use cache if available)
-                    metadata = None
-                    if hasattr(source, "get_metadata"):
-                        try:
-                            metadata = source.get_metadata(doi)
-                        except Exception as e:
-                            logger.debug(f"[Router] Failed to get metadata from {source.name}: {e}")
-
-                    if isinstance(metadata, dict):
-                        metadata.setdefault("source", source.name)
-                    return pdf_url, metadata, source.name
+                can_handle = source.can_handle(doi)
+                attempt["can_handle"] = can_handle
+                if not can_handle:
+                    logger.debug(f"[Router] Skipping {source.name} (cannot handle identifier)")
+                    attempt["status"] = "skipped"
+                    attempt["reason"] = "cannot_handle"
                 else:
-                    logger.info(f"[Router] {source.name} did not find PDF, trying next source...")
+                    logger.info(f"[Router] Trying {source.name} for {doi}...")
+                    with self._source_trace_context(
+                        source=source,
+                        doi=doi,
+                        phase=phase,
+                        html_snapshot_callback=html_snapshot_callback,
+                    ):
+                        pdf_url = source.get_pdf_url(doi)
+                    if pdf_url:
+                        logger.info(f"[Router] SUCCESS: Found PDF via {source.name}")
+
+                        if hasattr(source, "get_metadata"):
+                            try:
+                                metadata = source.get_metadata(doi)
+                            except Exception as e:
+                                logger.debug(f"[Router] Failed to get metadata from {source.name}: {e}")
+
+                        if isinstance(metadata, dict):
+                            metadata.setdefault("source", source.name)
+                        attempt["status"] = "success"
+                        attempt["pdf_url"] = pdf_url
+                        attempt["metadata_found"] = bool(metadata)
+                    else:
+                        logger.info(f"[Router] {source.name} did not find PDF, trying next source...")
+                        attempt["status"] = "no_result"
             except Exception as e:
                 logger.warning(f"[Router] {source.name} error: {e}, trying next source...")
-                continue
+                attempt["status"] = "error"
+                attempt["error"] = str(e)
+
+            attempt["duration_ms"] = round((time.time() - started_at) * 1000.0, 3)
+            attempts.append(attempt)
+            if pdf_url:
+                return pdf_url, metadata, source.name, attempts
 
         logger.warning(f"[Router] All sources failed for {doi}")
-        return None, None, None
+        return None, None, None, attempts
 
     def _query_sources_parallel(
-        self, doi: str, chain: list[PaperSource]
-    ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
+        self,
+        doi: str,
+        chain: list[PaperSource],
+        *,
+        phase: str,
+        html_snapshot_callback: HtmlSnapshotCallback | None = None,
+    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[SourceAttempt]]:
         """
         Query multiple sources in parallel, return first successful result.
 
@@ -242,7 +338,7 @@ class SourceManager:
             chain: Ordered list of sources (priority order)
 
         Returns:
-            Tuple of (pdf_url, metadata, source) - all can be None
+            Tuple of (pdf_url, metadata, source, attempts) - all can be None
         """
         source_names = [s.name for s in chain]
         logger.info(f"[Router] Parallel query to {len(chain)} sources: {source_names}")
@@ -251,17 +347,38 @@ class SourceManager:
 
         # Track results by source name for priority handling
         results: dict[str, tuple[Optional[str], Optional[dict]]] = {}
+        attempts_by_source: dict[str, SourceAttempt] = {}
         completed_sources = set()
 
-        def query_single_source(source: PaperSource) -> tuple[str, Optional[str], Optional[dict]]:
-            """Query a single source, return (source_name, pdf_url, metadata)."""
+        def query_single_source(
+            source: PaperSource, priority: int
+        ) -> tuple[str, Optional[str], Optional[dict], SourceAttempt]:
+            """Query a single source, return (source_name, pdf_url, metadata, attempt)."""
+            started_at = time.time()
+            attempt: SourceAttempt = {
+                "source": source.name,
+                "phase": phase,
+                "priority": priority,
+                "started_at": started_at,
+                "status": "unknown",
+            }
             try:
-                if not source.can_handle(doi):
+                can_handle = source.can_handle(doi)
+                attempt["can_handle"] = can_handle
+                if not can_handle:
                     logger.debug(f"[Router] Skipping {source.name} (cannot handle identifier)")
-                    return source.name, None, None
+                    attempt["status"] = "skipped"
+                    attempt["reason"] = "cannot_handle"
+                    return source.name, None, None, attempt
 
                 logger.debug(f"[Router] Starting parallel query to {source.name}...")
-                pdf_url = source.get_pdf_url(doi)
+                with self._source_trace_context(
+                    source=source,
+                    doi=doi,
+                    phase=phase,
+                    html_snapshot_callback=html_snapshot_callback,
+                ):
+                    pdf_url = source.get_pdf_url(doi)
 
                 metadata = None
                 if pdf_url and hasattr(source, "get_metadata"):
@@ -270,14 +387,25 @@ class SourceManager:
 
                 if isinstance(metadata, dict):
                     metadata.setdefault("source", source.name)
-                return source.name, pdf_url, metadata
+                if pdf_url:
+                    attempt["status"] = "success"
+                    attempt["pdf_url"] = pdf_url
+                    attempt["metadata_found"] = bool(metadata)
+                else:
+                    attempt["status"] = "no_result"
+                return source.name, pdf_url, metadata, attempt
             except Exception as e:
                 logger.debug(f"[Router] {source.name} parallel query error: {e}")
-                return source.name, None, None
+                attempt["status"] = "error"
+                attempt["error"] = str(e)
+                return source.name, None, None, attempt
+            finally:
+                attempt["duration_ms"] = round((time.time() - started_at) * 1000.0, 3)
 
         executor = ThreadPoolExecutor(max_workers=workers)
         future_to_source = {
-            executor.submit(query_single_source, source): source for source in chain
+            executor.submit(query_single_source, source, priority): source
+            for priority, source in enumerate(chain, start=1)
         }
 
         try:
@@ -285,7 +413,8 @@ class SourceManager:
             for future in as_completed(future_to_source):
                 source = future_to_source[future]
                 try:
-                    source_name, pdf_url, metadata = future.result()
+                    source_name, pdf_url, metadata, attempt = future.result()
+                    attempts_by_source[source_name] = attempt
                     completed_sources.add(source_name)
 
                     if pdf_url:
@@ -300,10 +429,20 @@ class SourceManager:
                                 # Cancel remaining futures
                                 for f in future_to_source:
                                     f.cancel()
+                                self._mark_cancelled_sources(
+                                    chain=chain,
+                                    attempts_by_source=attempts_by_source,
+                                    reason=f"Cancelled after {source_name} succeeded",
+                                )
                                 logger.info(
                                     f"[Router] SUCCESS: Using {source_name} (parallel, priority)"
                                 )
-                                return pdf_url, metadata, source_name
+                                return (
+                                    pdf_url,
+                                    metadata,
+                                    source_name,
+                                    self._sort_attempts(chain, attempts_by_source),
+                                )
                             elif priority_source.name in results:
                                 # A higher priority source already has a result
                                 break
@@ -315,20 +454,104 @@ class SourceManager:
 
                 except Exception as e:
                     logger.debug(f"[Router] Future exception for {source.name}: {e}")
+                    attempts_by_source[source.name] = {
+                        "source": source.name,
+                        "phase": phase,
+                        "priority": self._priority_of(chain, source.name),
+                        "status": "error",
+                        "error": f"future_exception: {e}",
+                    }
         finally:
             # Avoid blocking on lower-priority/slow sources once we have enough information.
             executor.shutdown(wait=False, cancel_futures=True)
 
         # All futures done, return best result by priority
+        attempts = self._sort_attempts(chain, attempts_by_source)
         for source in chain:
             if source.name in results:
                 pdf_url, metadata = results[source.name]
                 if pdf_url:
                     logger.info(f"[Router] SUCCESS: Using {source.name} (parallel, best available)")
-                    return pdf_url, metadata, source.name
+                    return pdf_url, metadata, source.name, attempts
 
         logger.warning(f"[Router] All sources failed for {doi} (parallel)")
-        return None, None, None
+        return None, None, None, attempts
+
+    @contextlib.contextmanager
+    def _source_trace_context(
+        self,
+        *,
+        source: PaperSource,
+        doi: str,
+        phase: str,
+        html_snapshot_callback: HtmlSnapshotCallback | None,
+    ):
+        """
+        Bind per-source trace context into the underlying downloader when available.
+
+        This allows FileDownloader.get_page_content() to emit HTML snapshots with
+        source/identifier metadata without changing source interfaces.
+        """
+        if html_snapshot_callback is None:
+            yield
+            return
+
+        downloader = getattr(source, "downloader", None)
+        push = getattr(downloader, "push_trace_context", None)
+        clear = getattr(downloader, "clear_trace_context", None)
+        if not callable(push) or not callable(clear):
+            yield
+            return
+
+        push(
+            {
+                "identifier": doi,
+                "source": source.name,
+                "phase": phase,
+            },
+            html_snapshot_callback=html_snapshot_callback,
+        )
+        try:
+            yield
+        finally:
+            clear()
+
+    @staticmethod
+    def _priority_of(chain: list[PaperSource], source_name: str) -> int:
+        for priority, source in enumerate(chain, start=1):
+            if source.name == source_name:
+                return priority
+        return len(chain) + 1
+
+    def _mark_cancelled_sources(
+        self,
+        *,
+        chain: list[PaperSource],
+        attempts_by_source: dict[str, SourceAttempt],
+        reason: str,
+    ) -> None:
+        for priority, source in enumerate(chain, start=1):
+            if source.name in attempts_by_source:
+                continue
+            attempts_by_source[source.name] = {
+                "source": source.name,
+                "phase": attempts_by_source[next(iter(attempts_by_source))].get("phase")
+                if attempts_by_source
+                else "parallel",
+                "priority": priority,
+                "status": "cancelled",
+                "reason": reason,
+            }
+
+    @staticmethod
+    def _sort_attempts(
+        chain: list[PaperSource], attempts_by_source: dict[str, SourceAttempt]
+    ) -> list[SourceAttempt]:
+        order = {source.name: idx for idx, source in enumerate(chain)}
+        return sorted(
+            attempts_by_source.values(),
+            key=lambda attempt: order.get(str(attempt.get("source")), 999),
+        )
 
     def _get_year_smart(self, doi: str) -> Optional[int]:
         """

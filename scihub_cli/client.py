@@ -3,8 +3,10 @@ Main Sci-Hub client providing high-level interface with multi-source support.
 """
 
 import os
+import re
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from .config.settings import settings
 from .converters.pdf_to_md import PdfToMarkdownConverter
@@ -50,6 +52,9 @@ class SciHubClient:
         md_strict: bool = True,
         md_overwrite: bool = False,
         md_converter: PdfToMarkdownConverter | None = None,
+        trace_html: bool = False,
+        trace_html_dir: str | None = None,
+        trace_html_max_chars: int = 2_000_000,
     ):
         """Initialize client with optional dependency injection."""
 
@@ -65,6 +70,9 @@ class SciHubClient:
         self.md_strict = md_strict
         self.md_overwrite = md_overwrite
         self.md_converter = md_converter
+        self.trace_html = trace_html
+        self.trace_html_dir = trace_html_dir
+        self.trace_html_max_chars = trace_html_max_chars
 
         # Dependency injection with defaults
         self.mirror_manager = mirror_manager or MirrorManager(mirrors, self.timeout)
@@ -138,6 +146,7 @@ class SciHubClient:
         Gets URL and metadata in one pass to avoid duplicate API calls.
         """
         start_time = time.time()
+        html_events: list[dict[str, Any]] = []
 
         def _build_result(
             *,
@@ -151,6 +160,8 @@ class SciHubClient:
             md_path: str | None = None,
             md_success: bool | None = None,
             md_error: str | None = None,
+            source_attempts: list[dict[str, Any]] | None = None,
+            html_snapshots: list[dict[str, Any]] | None = None,
         ) -> DownloadResult:
             title = metadata.get("title") if isinstance(metadata, dict) else None
             year = metadata.get("year") if isinstance(metadata, dict) else None
@@ -170,12 +181,28 @@ class SciHubClient:
                 md_path=md_path,
                 md_success=md_success,
                 md_error=md_error,
+                source_attempts=source_attempts,
+                html_snapshots=html_snapshots,
             )
 
+        def _collect_html_snapshot(snapshot: dict[str, Any]) -> None:
+            if self.trace_html:
+                html_events.append(dict(snapshot))
+
+        source_attempts: list[dict[str, Any]]
         # Get PDF URL and metadata together (avoids duplicate API calls)
-        download_url, metadata, source = self.source_manager.get_pdf_url_with_metadata(
-            normalized_identifier
-        )
+        if hasattr(self.source_manager, "get_pdf_url_with_metadata_and_trace"):
+            download_url, metadata, source, source_attempts = (
+                self.source_manager.get_pdf_url_with_metadata_and_trace(
+                    normalized_identifier,
+                    html_snapshot_callback=_collect_html_snapshot if self.trace_html else None,
+                )
+            )
+        else:
+            download_url, metadata, source = self.source_manager.get_pdf_url_with_metadata(
+                normalized_identifier
+            )
+            source_attempts = []
 
         if not download_url:
             error = f"Could not find PDF URL for {normalized_identifier} from any source"
@@ -185,6 +212,8 @@ class SciHubClient:
                 metadata=metadata,
                 source=source,
                 error=error,
+                source_attempts=source_attempts,
+                html_snapshots=self._persist_html_snapshots(identifier, html_events),
             )
 
         logger.debug(f"Download URL: {download_url}")
@@ -241,6 +270,8 @@ class SciHubClient:
                 source=source,
                 download_url=download_url,
                 error=error_msg,
+                source_attempts=source_attempts,
+                html_snapshots=self._persist_html_snapshots(identifier, html_events),
             )
 
         # Validate file
@@ -253,6 +284,8 @@ class SciHubClient:
                 source=source,
                 download_url=download_url,
                 error=error,
+                source_attempts=source_attempts,
+                html_snapshots=self._persist_html_snapshots(identifier, html_events),
             )
 
         md_path: str | None = None
@@ -277,11 +310,67 @@ class SciHubClient:
             md_path=md_path,
             md_success=md_success,
             md_error=md_error,
+            source_attempts=source_attempts,
         )
 
-    def _convert_pdf_to_markdown(self, pdf_path: str) -> tuple[str | None, bool | None, str | None]:
-        from pathlib import Path
+    def _persist_html_snapshots(
+        self, identifier: str, snapshots: list[dict[str, Any]]
+    ) -> list[dict[str, Any]] | None:
+        """
+        Persist captured HTML snapshots to disk and return metadata records.
 
+        Snapshots are only persisted when trace_html is enabled.
+        """
+        if not self.trace_html or not snapshots:
+            return None
+
+        base_dir = Path(self.trace_html_dir) if self.trace_html_dir else Path(self.output_dir) / "trace-html"
+        identifier_dir = base_dir / self._safe_trace_token(identifier)
+        identifier_dir.mkdir(parents=True, exist_ok=True)
+
+        saved_records: list[dict[str, Any]] = []
+        for index, snapshot in enumerate(snapshots, start=1):
+            record = {k: v for k, v in snapshot.items() if k != "html"}
+
+            raw_html = snapshot.get("html")
+            html_text = raw_html if isinstance(raw_html, str) else None
+            record["html_chars"] = len(html_text) if html_text is not None else 0
+
+            status_part = str(snapshot.get("status_code") if snapshot.get("status_code") is not None else "na")
+            source_part = self._safe_trace_token(str(snapshot.get("source") or "unknown_source"))
+            fetcher_part = self._safe_trace_token(str(snapshot.get("fetcher") or "requests"))
+
+            if not html_text:
+                record["file_path"] = None
+                saved_records.append(record)
+                continue
+
+            truncated = False
+            if len(html_text) > self.trace_html_max_chars:
+                html_text = html_text[: self.trace_html_max_chars]
+                truncated = True
+
+            record["truncated"] = truncated
+            target = identifier_dir / f"{index:03d}_{source_part}_{fetcher_part}_{status_part}.html"
+            try:
+                target.write_text(html_text, encoding="utf-8", errors="ignore")
+                record["file_path"] = str(target)
+            except Exception as e:
+                record["file_path"] = None
+                record["snapshot_error"] = str(e)
+
+            saved_records.append(record)
+
+        return saved_records
+
+    @staticmethod
+    def _safe_trace_token(value: str) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "_", value).strip("._-")
+        if not cleaned:
+            return "unknown"
+        return cleaned[:120]
+
+    def _convert_pdf_to_markdown(self, pdf_path: str) -> tuple[str | None, bool | None, str | None]:
         from .converters.pdf_to_md import MarkdownConvertOptions
 
         pdf = Path(pdf_path)

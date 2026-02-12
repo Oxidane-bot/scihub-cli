@@ -2,8 +2,9 @@
 Core downloader implementation with single responsibility.
 """
 
+import threading
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import requests
 
@@ -34,6 +35,51 @@ class FileDownloader:
         # Rate limiting for curl_cffi bypass (per-domain)
         self._last_bypass_time = {}  # domain -> timestamp
         self._bypass_delay = 2.0  # seconds between bypass requests to same domain
+        self._trace_local = threading.local()
+
+    def push_trace_context(
+        self,
+        context: dict[str, Any],
+        *,
+        html_snapshot_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        """Bind per-call diagnostic context for get_page_content."""
+        self._trace_local.context = dict(context)
+        self._trace_local.html_snapshot_callback = html_snapshot_callback
+
+    def clear_trace_context(self) -> None:
+        """Clear per-call diagnostic context."""
+        if hasattr(self._trace_local, "context"):
+            del self._trace_local.context
+        if hasattr(self._trace_local, "html_snapshot_callback"):
+            del self._trace_local.html_snapshot_callback
+
+    def _emit_html_snapshot(
+        self,
+        *,
+        url: str,
+        status_code: int | None,
+        html: str | None,
+        fetcher: str,
+        error: str | None = None,
+    ) -> None:
+        callback = getattr(self._trace_local, "html_snapshot_callback", None)
+        if not callable(callback):
+            return
+
+        context = getattr(self._trace_local, "context", {}) or {}
+        payload = {
+            **context,
+            "url": url,
+            "status_code": status_code,
+            "fetcher": fetcher,
+            "error": error,
+            "html": html,
+        }
+        try:
+            callback(payload)
+        except Exception as e:
+            logger.debug(f"HTML snapshot callback failed: {e}")
 
     def download_file(
         self,
@@ -382,6 +428,12 @@ class FileDownloader:
         """
         try:
             response = self.session.get(url, timeout=self.timeout)
+            self._emit_html_snapshot(
+                url=url,
+                status_code=response.status_code,
+                html=response.text,
+                fetcher="requests",
+            )
 
             # If we get 403, try curl_cffi bypass
             if response.status_code == 403:
@@ -402,6 +454,13 @@ class FileDownloader:
             return response.text, response.status_code
         except Exception as e:
             logger.error(f"Error fetching page content: {e}")
+            self._emit_html_snapshot(
+                url=url,
+                status_code=None,
+                html=None,
+                fetcher="requests",
+                error=str(e),
+            )
             return None, None
 
     def _get_page_with_cloudscraper(self, url: str) -> tuple[Optional[str], Optional[int]]:
@@ -423,9 +482,22 @@ class FileDownloader:
             scraper = cloudscraper.create_scraper()
             response = scraper.get(url, timeout=self.timeout)
             logger.debug(f"[cloudscraper] Page fetch status: {response.status_code}")
+            self._emit_html_snapshot(
+                url=url,
+                status_code=response.status_code,
+                html=response.text,
+                fetcher="cloudscraper",
+            )
             return response.text, response.status_code
         except Exception as e:
             logger.debug(f"[cloudscraper] Page fetch failed: {e}")
+            self._emit_html_snapshot(
+                url=url,
+                status_code=None,
+                html=None,
+                fetcher="cloudscraper",
+                error=str(e),
+            )
             return None, None
 
     def _get_page_with_curl_cffi(self, url: str) -> tuple[Optional[str], Optional[int]]:
@@ -466,8 +538,21 @@ class FileDownloader:
             self._last_bypass_time[domain] = time.time()
 
             logger.debug(f"[curl_cffi] Page fetch status: {response.status_code}")
+            self._emit_html_snapshot(
+                url=url,
+                status_code=response.status_code,
+                html=response.text,
+                fetcher="curl_cffi",
+            )
             return response.text, response.status_code
 
         except Exception as e:
             logger.debug(f"[curl_cffi] Page fetch failed: {e}")
+            self._emit_html_snapshot(
+                url=url,
+                status_code=None,
+                html=None,
+                fetcher="curl_cffi",
+                error=str(e),
+            )
             return None, None

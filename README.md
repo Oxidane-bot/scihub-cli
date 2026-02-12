@@ -211,6 +211,11 @@ options:
                         Markdown conversion backend (default: pymupdf4llm)
   --md-overwrite        Overwrite existing Markdown files
   --md-warn-only        Do not fail the run if Markdown conversion fails
+  --trace-html          Capture and persist HTML snapshots for failed downloads
+  --trace-html-dir TRACE_HTML_DIR
+                        Directory for HTML snapshots (default: <output>/trace-html)
+  --trace-html-max-chars TRACE_HTML_MAX_CHARS
+                        Maximum characters per HTML snapshot file (default: 2000000)
   --email EMAIL         Email for Unpaywall API (saves to config file)
   -v, --verbose         Enable verbose logging
   --version             show program's version number and exit
@@ -240,6 +245,9 @@ scihub-cli --to-md papers.txt
 
 # Custom markdown output directory
 scihub-cli --to-md --md-output research/markdown papers.txt
+
+# Enable failure diagnostics (source attempts + HTML snapshots in download-report.json)
+scihub-cli --to-md --md-warn-only --trace-html papers.txt
 
 # Specify output directory
 scihub-cli -o research/papers papers.txt

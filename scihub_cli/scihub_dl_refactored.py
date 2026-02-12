@@ -7,13 +7,72 @@ This is the backward-compatible interface that uses the new modular architecture
 """
 
 import argparse
+import json
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from . import __version__
 from .client import SciHubClient
 from .config.settings import settings
 from .config.user_config import user_config
+from .models import DownloadResult
 from .utils.logging import get_logger, setup_logging
+
+
+def _result_to_dict(result: DownloadResult) -> dict:
+    return {
+        "identifier": result.identifier,
+        "normalized_identifier": result.normalized_identifier,
+        "success": result.success,
+        "source": result.source,
+        "download_url": result.download_url,
+        "file_path": result.file_path,
+        "file_size": result.file_size,
+        "download_time": result.download_time,
+        "title": result.title,
+        "year": result.year,
+        "error": result.error,
+        "md_path": result.md_path,
+        "md_success": result.md_success,
+        "md_error": result.md_error,
+        "source_attempts": result.source_attempts,
+        "html_snapshots": result.html_snapshots,
+    }
+
+
+def _write_failure_report(results: list[DownloadResult], output_dir: str) -> str | None:
+    failures = [result for result in results if not result.success]
+    md_failures = [result for result in results if result.success and result.md_success is False]
+    if not failures and not md_failures:
+        return None
+
+    successful_downloads = [result for result in results if result.success]
+    md_attempted = [result for result in successful_downloads if result.md_success is not None]
+    md_successes = [result for result in successful_downloads if result.md_success is True]
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "total": len(results),
+            "download_success": len(successful_downloads),
+            "download_failures": len(failures),
+            "md_attempted": len(md_attempted),
+            "md_success": len(md_successes),
+            "md_failures": len(md_failures),
+        },
+        "download_failures": [_result_to_dict(result) for result in failures],
+        "md_failures": [_result_to_dict(result) for result in md_failures],
+        "results": [_result_to_dict(result) for result in results],
+    }
+
+    report_path = Path(output_dir) / "download-report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return str(report_path)
 
 
 def main():
@@ -77,6 +136,21 @@ def main():
         action="store_true",
         help="Do not fail the run if Markdown conversion fails",
     )
+    parser.add_argument(
+        "--trace-html",
+        action="store_true",
+        help="Capture and persist HTML snapshots for failed downloads",
+    )
+    parser.add_argument(
+        "--trace-html-dir",
+        help="Directory for HTML snapshots (default: <output>/trace-html)",
+    )
+    parser.add_argument(
+        "--trace-html-max-chars",
+        type=int,
+        default=2_000_000,
+        help="Maximum characters per HTML snapshot file (default: 2000000)",
+    )
     parser.add_argument("--email", help="Email for Unpaywall API (saves to config file)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--version", action="version", version=f"scihub-cli v{__version__}")
@@ -114,6 +188,9 @@ def main():
         md_backend=args.md_backend,
         md_strict=not args.md_warn_only,
         md_overwrite=args.md_overwrite,
+        trace_html=args.trace_html,
+        trace_html_dir=args.trace_html_dir,
+        trace_html_max_chars=args.trace_html_max_chars,
     )
 
     # Download papers
@@ -137,6 +214,10 @@ def main():
             for result in md_failures:
                 error = result.md_error or "Unknown error"
                 logger.warning(f"  - {result.identifier}: {error}")
+
+        report_path = _write_failure_report(results, args.output)
+        if report_path:
+            logger.warning(f"Failure report saved to: {report_path}")
 
         exit_code = 0 if len(failures) == 0 else 1
         if strict_md and md_failures:
