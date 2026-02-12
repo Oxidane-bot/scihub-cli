@@ -1,6 +1,9 @@
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import sleep
 
 from scihub_cli.converters.pdf_to_md import MarkdownConvertOptions
 from scihub_cli.converters.pymupdf4llm_converter import Pymupdf4llmConverter
@@ -82,3 +85,41 @@ def test_converter_falls_back_to_plain_text(monkeypatch, tmp_path: Path):
     assert "## Page 1" in content
     assert "hello from page 1" in content
     assert "## Page 2" in content
+
+
+def test_converter_serializes_concurrent_conversions(monkeypatch, tmp_path: Path):
+    state_lock = threading.Lock()
+    active = {"count": 0, "max": 0}
+
+    def _to_markdown(doc, **kwargs):  # noqa: ARG001
+        with state_lock:
+            active["count"] += 1
+            active["max"] = max(active["max"], active["count"])
+            if active["count"] > 1:
+                raise RuntimeError("concurrent conversion detected")
+        try:
+            sleep(0.05)
+            return "# Converted\n\nok\n"
+        finally:
+            with state_lock:
+                active["count"] -= 1
+
+    monkeypatch.setitem(sys.modules, "pymupdf4llm", types.SimpleNamespace(to_markdown=_to_markdown))
+
+    converter = Pymupdf4llmConverter()
+
+    def _convert_one(i: int) -> tuple[bool, str | None]:
+        pdf_path = tmp_path / f"paper_{i}.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
+        md_path = tmp_path / f"paper_{i}.md"
+        return converter.convert(
+            str(pdf_path),
+            str(md_path),
+            options=MarkdownConvertOptions(overwrite=True),
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(_convert_one, range(4)))
+
+    assert all(ok and error is None for ok, error in results)
+    assert active["max"] == 1

@@ -6,6 +6,7 @@ that the base downloader can run without the optional markdown dependencies.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from .pdf_to_md import MarkdownConvertOptions
@@ -13,6 +14,8 @@ from .pdf_to_md import MarkdownConvertOptions
 
 class Pymupdf4llmConverter:
     """Convert PDF to Markdown using pymupdf4llm."""
+
+    _convert_lock = threading.Lock()
 
     def convert(
         self, pdf_path: str, md_path: str, *, options: MarkdownConvertOptions
@@ -22,7 +25,10 @@ class Pymupdf4llmConverter:
         except Exception as e:  # pragma: no cover
             return False, f"pymupdf4llm is not installed: {e}"
 
-        markdown_text, convert_error = self._convert_with_fallbacks(pymupdf4llm, pdf_path)
+        # pymupdf4llm has shown non-deterministic failures under concurrent usage.
+        # Serialize conversion to prioritize robustness over throughput.
+        with self._convert_lock:
+            markdown_text, convert_error = self._convert_with_fallbacks(pymupdf4llm, pdf_path)
         if markdown_text is None:
             return False, convert_error or "Markdown conversion failed"
 
