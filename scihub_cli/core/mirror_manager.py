@@ -115,6 +115,7 @@ class MirrorManager:
             for m in self.mirrors
             if not self._is_blacklisted(m) and not MirrorConfig.is_hard_mirror(m)
         ]
+        easy_blacklist_filtered_out = not easy_mirrors
 
         if easy_mirrors:
             result = self._test_mirrors_parallel(easy_mirrors, allow_403=False)
@@ -129,12 +130,34 @@ class MirrorManager:
             for m in self.mirrors
             if not self._is_blacklisted(m) and MirrorConfig.is_hard_mirror(m)
         ]
+        hard_blacklist_filtered_out = not hard_mirrors
 
         if hard_mirrors:
             result = self._test_mirrors_parallel(hard_mirrors, allow_403=True)
             if result:
                 logger.info(f"SUCCESS: Using hard mirror: {result}")
                 return result
+
+        # All candidates were filtered out by blacklist: do a one-time forced retest.
+        if easy_blacklist_filtered_out and hard_blacklist_filtered_out and self._failed_mirrors:
+            logger.warning(
+                "All mirrors are currently blacklisted; retrying once while ignoring blacklist"
+            )
+            easy_all = [m for m in self.mirrors if not MirrorConfig.is_hard_mirror(m)]
+            hard_all = [m for m in self.mirrors if MirrorConfig.is_hard_mirror(m)]
+
+            if easy_all:
+                result = self._test_mirrors_parallel(easy_all, allow_403=False)
+                if result:
+                    logger.info(f"SUCCESS: Using easy mirror after blacklist fallback: {result}")
+                    self._failed_mirrors.pop(result, None)
+                    return result
+            if hard_all:
+                result = self._test_mirrors_parallel(hard_all, allow_403=True)
+                if result:
+                    logger.info(f"SUCCESS: Using hard mirror after blacklist fallback: {result}")
+                    self._failed_mirrors.pop(result, None)
+                    return result
 
         raise Exception("All mirrors are unavailable")
 

@@ -41,7 +41,7 @@ class _SequencedSession:
         return self._responses[idx]
 
 
-@pytest.mark.parametrize("status_code", [408, 429])
+@pytest.mark.parametrize("status_code", [202, 408, 429])
 def test_retryable_http_statuses_are_retried(tmp_path, status_code: int):
     pdf_bytes = _make_fake_pdf_bytes()
     session = _SequencedSession(

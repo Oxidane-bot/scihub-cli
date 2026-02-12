@@ -113,10 +113,13 @@ class FileDownloader:
                 _attempt_download, self.retry_config, f"download from {url}"
             )
         except PermanentError as e:
-            # Check if it's a 403 error - might be CDN protection
+            # Check if it's a 403 or HTML response - might be CDN protection/challenge page.
             error_msg = str(e)
-            if "403" in error_msg:
-                logger.warning("Got 403 error, attempting cloudscraper bypass...")
+            if "403" in error_msg or "Server returned HTML" in error_msg:
+                if "403" in error_msg:
+                    logger.warning("Got 403 error, attempting cloudscraper bypass...")
+                else:
+                    logger.warning("Got HTML response, attempting cloudscraper bypass...")
                 success, bypass_error = self._download_with_cloudscraper(
                     url, output_path, progress_callback
                 )
@@ -126,7 +129,10 @@ class FileDownloader:
                 if bypass_error:
                     logger.warning(f"cloudscraper bypass also failed: {bypass_error}")
 
-                logger.warning("Got 403 error, attempting curl_cffi bypass...")
+                if "403" in error_msg:
+                    logger.warning("Got 403 error, attempting curl_cffi bypass...")
+                else:
+                    logger.warning("Got HTML response, attempting curl_cffi bypass...")
                 success, bypass_error = self._download_with_curl_cffi(
                     url, output_path, progress_callback
                 )
@@ -204,10 +210,40 @@ class FileDownloader:
 
             # Classify HTTP errors
             if response.status_code == 404:
+                self._emit_html_snapshot(
+                    url=url,
+                    status_code=response.status_code,
+                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    fetcher="requests",
+                    error="File not found (404)",
+                )
                 raise PermanentError("File not found (404)")
             elif response.status_code == 403:
+                self._emit_html_snapshot(
+                    url=url,
+                    status_code=response.status_code,
+                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    fetcher="requests",
+                    error="Access denied (403)",
+                )
                 raise PermanentError("Access denied (403)")
+            elif response.status_code == 202:
+                self._emit_html_snapshot(
+                    url=url,
+                    status_code=response.status_code,
+                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    fetcher="requests",
+                    error="HTTP 202",
+                )
+                raise RetryableError("HTTP 202")
             elif response.status_code != 200:
+                self._emit_html_snapshot(
+                    url=url,
+                    status_code=response.status_code,
+                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    fetcher="requests",
+                    error=f"HTTP {response.status_code}",
+                )
                 if classify_http_error(response.status_code):
                     raise RetryableError(f"HTTP {response.status_code}")
                 raise PermanentError(f"HTTP {response.status_code}")
@@ -218,6 +254,13 @@ class FileDownloader:
                 logger.warning(f"Response is not a PDF: {content_type}")
                 # If it's clearly HTML, reject it (permanent)
                 if "html" in content_type.lower():
+                    self._emit_html_snapshot(
+                        url=url,
+                        status_code=response.status_code,
+                        html=response.text,
+                        fetcher="requests",
+                        error=f"Server returned HTML instead of PDF (Content-Type: {content_type})",
+                    )
                     raise PermanentError(
                         f"Server returned HTML instead of PDF (Content-Type: {content_type})"
                     )
@@ -293,10 +336,24 @@ class FileDownloader:
             response = scraper.get(url, timeout=self.timeout, stream=True)
 
             if response.status_code != 200:
+                self._emit_html_snapshot(
+                    url=url,
+                    status_code=response.status_code,
+                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    fetcher="cloudscraper",
+                    error=f"HTTP {response.status_code}",
+                )
                 return False, f"HTTP {response.status_code}"
 
             content_type = response.headers.get("Content-Type", "")
             if "html" in content_type.lower():
+                self._emit_html_snapshot(
+                    url=url,
+                    status_code=response.status_code,
+                    html=response.text,
+                    fetcher="cloudscraper",
+                    error=f"Server returned HTML (Content-Type: {content_type})",
+                )
                 return False, f"Server returned HTML (Content-Type: {content_type})"
 
             temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
@@ -382,11 +439,25 @@ class FileDownloader:
             self._last_bypass_time[domain] = time.time()
 
             if response.status_code != 200:
+                self._emit_html_snapshot(
+                    url=url,
+                    status_code=response.status_code,
+                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    fetcher="curl_cffi",
+                    error=f"HTTP {response.status_code}",
+                )
                 return False, f"HTTP {response.status_code}"
 
             # Check content type
             content_type = response.headers.get("Content-Type", "")
             if "html" in content_type.lower():
+                self._emit_html_snapshot(
+                    url=url,
+                    status_code=response.status_code,
+                    html=response.text,
+                    fetcher="curl_cffi",
+                    error=f"Server returned HTML (Content-Type: {content_type})",
+                )
                 return False, f"Server returned HTML (Content-Type: {content_type})"
 
             # Download to temporary location first

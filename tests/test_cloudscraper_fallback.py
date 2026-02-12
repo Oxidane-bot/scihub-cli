@@ -27,6 +27,22 @@ class _ForbiddenSession:
         )
 
 
+class _HtmlSession:
+    def get(self, url, timeout=None, stream=False):  # noqa: ARG002
+        if stream:
+            return _StubResponse(
+                status_code=200,
+                text="<html>challenge</html>",
+                headers={"Content-Type": "text/html; charset=UTF-8"},
+                content=b"<html>challenge</html>",
+            )
+        return _StubResponse(
+            status_code=200,
+            text="OK",
+            headers={"Content-Type": "text/html"},
+        )
+
+
 def test_get_page_content_cloudscraper_fallback(monkeypatch):
     downloader = FileDownloader(session=_ForbiddenSession(), timeout=5)
 
@@ -73,6 +89,34 @@ def test_download_file_cloudscraper_fallback(tmp_path, monkeypatch):
     )
 
     output = tmp_path / "paper.pdf"
+    success, error = downloader.download_file("https://example.org/paper.pdf", str(output))
+    assert success, error
+    assert output.read_bytes()[:4] == b"%PDF"
+
+
+def test_download_file_html_response_cloudscraper_fallback(tmp_path, monkeypatch):
+    downloader = FileDownloader(session=_HtmlSession(), timeout=5)
+    pdf_bytes = b"%PDF-1.4\\n1 0 obj\\n<<>>\\nendobj\\n%%EOF\\n"
+
+    def _create_scraper():
+        class _Scraper:
+            def get(self, url, timeout=None, stream=True):  # noqa: ARG002
+                return _StubResponse(
+                    status_code=200,
+                    headers={
+                        "Content-Type": "application/pdf",
+                        "Content-Length": str(len(pdf_bytes)),
+                    },
+                    content=pdf_bytes,
+                )
+
+        return _Scraper()
+
+    monkeypatch.setitem(
+        sys.modules, "cloudscraper", types.SimpleNamespace(create_scraper=_create_scraper)
+    )
+
+    output = tmp_path / "paper-html-fallback.pdf"
     success, error = downloader.download_file("https://example.org/paper.pdf", str(output))
     assert success, error
     assert output.read_bytes()[:4] == b"%PDF"
