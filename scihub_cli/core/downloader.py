@@ -14,6 +14,7 @@ from ..utils.retry import (
     DownloadRetryConfig,
     PermanentError,
     RetryableError,
+    classify_http_error,
     retry_with_classification,
 )
 
@@ -146,7 +147,7 @@ class FileDownloader:
 
         Raises:
             PermanentError: For 404, 403, invalid PDF content
-            RetryableError: For timeouts, 5xx errors, connection issues
+            RetryableError: For timeouts, 408/429/5xx errors, connection issues
         """
         import os
         import shutil
@@ -160,9 +161,9 @@ class FileDownloader:
                 raise PermanentError("File not found (404)")
             elif response.status_code == 403:
                 raise PermanentError("Access denied (403)")
-            elif response.status_code >= 500:
-                raise RetryableError(f"Server error ({response.status_code})")
             elif response.status_code != 200:
+                if classify_http_error(response.status_code):
+                    raise RetryableError(f"HTTP {response.status_code}")
                 raise PermanentError(f"HTTP {response.status_code}")
 
             # Check content type

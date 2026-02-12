@@ -39,9 +39,6 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Windows
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# Or via pip
-pip install uv
 ```
 
 ### Install scihub-cli (Global Installation)
@@ -75,14 +72,14 @@ If you prefer to run directly from source:
    cd scihub-cli
    ```
 
-2. Install the required dependencies:
-   ```
-   pip install -r requirements.txt
+2. Sync dependencies with the lockfile:
+   ```bash
+   uv sync --frozen
    ```
 
 3. Run directly with Python:
-   ```
-   python -m scihub_cli input_file.txt
+   ```bash
+   uv run python -m scihub_cli input_file.txt
    ```
 
 ### Troubleshooting Installation
@@ -145,8 +142,8 @@ scihub-cli input_file.txt
 # If running temporarily with uv
 uvx scihub-cli input_file.txt
 
-# If running directly from source
-python -m scihub_cli input_file.txt
+# If running directly from source repository
+uv run python -m scihub_cli input_file.txt
 ```
 
 Where `input_file.txt` is a text file containing DOIs or paper URLs, one per line.

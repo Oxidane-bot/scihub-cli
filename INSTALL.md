@@ -1,20 +1,20 @@
 # Installation
 
-## Recommended (uv)
+## Global Install (uv)
 
 ```bash
 uv tool install .
 ```
 
-## Alternative (pip)
+## Run From Source (uv)
 
 ```bash
-python -m pip install .
+uv sync --frozen
+uv run python -m scihub_cli papers.txt
 ```
 
-## Run From Source (no install)
+## Development Setup
 
 ```bash
-python -m scihub_cli papers.txt
+uv sync --dev
 ```
-

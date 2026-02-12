@@ -1,7 +1,6 @@
 include README.md
 include README.zh-CN.md
 include LICENSE
-include requirements.txt
 include INSTALL.md
 recursive-include scihub_cli *.py
 include scihub_cli/py.typed

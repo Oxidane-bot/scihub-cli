@@ -42,9 +42,6 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Linux系统
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 或通过pip安装
-pip install uv
 ```
 
 ### 安装scihub-cli（全局安装）
@@ -78,14 +75,14 @@ uvx scihub-cli papers.txt
    cd scihub-cli
    ```
 
-2. 安装所需依赖：
-   ```
-   pip install -r requirements.txt
+2. 使用 lock 文件同步依赖：
+   ```bash
+   uv sync --frozen
    ```
 
 3. 直接使用Python运行：
-   ```
-   python -m scihub_cli 输入文件.txt
+   ```bash
+   uv run python -m scihub_cli 输入文件.txt
    ```
 
 ### 安装故障排除
@@ -134,8 +131,8 @@ scihub-cli 输入文件.txt
 # 如果临时运行
 uvx scihub-cli 输入文件.txt
 
-# 如果直接运行
-python -m scihub_cli 输入文件.txt
+# 如果在源码仓库中运行
+uv run python -m scihub_cli 输入文件.txt
 ```
 
 其中`输入文件.txt`是包含 DOI / arXiv ID / URL 的文本文件，每行一个。
