@@ -5,6 +5,7 @@ Core downloader implementation with single responsibility.
 import threading
 import time
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -18,8 +19,26 @@ from ..utils.retry import (
     classify_http_error,
     retry_with_classification,
 )
+from .pdf_link_extractor import extract_ranked_pdf_candidates
 
 logger = get_logger(__name__)
+
+
+class HTMLResponseError(PermanentError):
+    """Raised when a download endpoint serves HTML instead of a PDF."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        url: str,
+        status_code: int | None,
+        content_type: str | None,
+    ):
+        super().__init__(message)
+        self.url = url
+        self.status_code = status_code
+        self.content_type = content_type
 
 
 class FileDownloader:
@@ -36,6 +55,8 @@ class FileDownloader:
         self._last_bypass_time = {}  # domain -> timestamp
         self._bypass_delay = 2.0  # seconds between bypass requests to same domain
         self._trace_local = threading.local()
+        self._html_recovery_max_depth = 1
+        self._html_recovery_min_score = 750
 
     def push_trace_context(
         self,
@@ -63,6 +84,18 @@ class FileDownloader:
         fetcher: str,
         error: str | None = None,
     ) -> None:
+        runtime_events = getattr(self._trace_local, "download_html_events", None)
+        if isinstance(runtime_events, list):
+            runtime_events.append(
+                {
+                    "url": url,
+                    "status_code": status_code,
+                    "fetcher": fetcher,
+                    "error": error,
+                    "html": html,
+                }
+            )
+
         callback = getattr(self._trace_local, "html_snapshot_callback", None)
         if not callable(callback):
             return
@@ -86,6 +119,9 @@ class FileDownloader:
         url: str,
         output_path: str,
         progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+        *,
+        _html_recovery_depth: int = 0,
+        _visited_urls: set[str] | None = None,
     ) -> tuple[bool, Optional[str]]:
         """
         Download a file from URL to output path with automatic retry.
@@ -105,51 +141,163 @@ class FileDownloader:
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
-        def _attempt_download():
-            return self._download_once(url, output_path, progress_callback)
+        visited_urls = _visited_urls if _visited_urls is not None else set()
+        normalized_url = self._normalize_recovery_url(url)
+        if normalized_url:
+            visited_urls.add(normalized_url)
+
+        previous_events = getattr(self._trace_local, "download_html_events", None)
+        self._trace_local.download_html_events = []
 
         try:
-            return retry_with_classification(
-                _attempt_download, self.retry_config, f"download from {url}"
+            def _attempt_download():
+                return self._download_once(url, output_path, progress_callback)
+
+            try:
+                return retry_with_classification(
+                    _attempt_download, self.retry_config, f"download from {url}"
+                )
+            except PermanentError as e:
+                # Check if it's a 403 or HTML response - might be CDN protection/challenge page.
+                error_msg = str(e)
+                if isinstance(e, HTMLResponseError) or "403" in error_msg:
+                    if "403" in error_msg:
+                        logger.warning("Got 403 error, attempting cloudscraper bypass...")
+                    else:
+                        logger.warning("Got HTML response, attempting cloudscraper bypass...")
+                    success, bypass_error = self._download_with_cloudscraper(
+                        url, output_path, progress_callback
+                    )
+                    if success:
+                        logger.info("Successfully downloaded using cloudscraper bypass")
+                        return True, None
+                    if bypass_error:
+                        logger.warning(f"cloudscraper bypass also failed: {bypass_error}")
+
+                    if "403" in error_msg:
+                        logger.warning("Got 403 error, attempting curl_cffi bypass...")
+                    else:
+                        logger.warning("Got HTML response, attempting curl_cffi bypass...")
+                    success, bypass_error = self._download_with_curl_cffi(
+                        url, output_path, progress_callback
+                    )
+                    if success:
+                        logger.info("Successfully downloaded using curl_cffi bypass")
+                        return True, None
+                    if bypass_error:
+                        logger.warning(f"curl_cffi bypass also failed: {bypass_error}")
+
+                if _html_recovery_depth < self._html_recovery_max_depth:
+                    html_events = self._collect_html_events_for_recovery()
+                    recovered, recovery_error = self._recover_from_html_candidates(
+                        output_path=output_path,
+                        progress_callback=progress_callback,
+                        html_events=html_events,
+                        visited_urls=visited_urls,
+                        next_depth=_html_recovery_depth + 1,
+                    )
+                    if recovered:
+                        return True, None
+                    if recovery_error:
+                        error_msg = f"{error_msg}. {recovery_error}"
+
+                logger.error(f"Permanent failure: {error_msg}")
+                return False, error_msg
+            except Exception as e:
+                # All retries exhausted
+                error_msg = str(e)
+                logger.error(f"Download failed after all retries: {error_msg}")
+                return False, error_msg
+        finally:
+            if previous_events is None:
+                if hasattr(self._trace_local, "download_html_events"):
+                    del self._trace_local.download_html_events
+            else:
+                self._trace_local.download_html_events = previous_events
+
+    def _collect_html_events_for_recovery(self) -> list[dict[str, Any]]:
+        events = getattr(self._trace_local, "download_html_events", None)
+        if not isinstance(events, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            html = event.get("html")
+            if not isinstance(html, str) or not html.strip():
+                continue
+            out.append(event)
+        return out
+
+    def _recover_from_html_candidates(
+        self,
+        *,
+        output_path: str,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]],
+        html_events: list[dict[str, Any]],
+        visited_urls: set[str],
+        next_depth: int,
+    ) -> tuple[bool, str | None]:
+        if not html_events:
+            return False, None
+
+        ranked_candidates: dict[str, int] = {}
+        order: dict[str, int] = {}
+        order_counter = 0
+        for event in html_events:
+            html = event.get("html")
+            base_url = event.get("url")
+            if not isinstance(html, str) or not isinstance(base_url, str):
+                continue
+            for score, candidate in extract_ranked_pdf_candidates(html, base_url):
+                if score < self._html_recovery_min_score:
+                    continue
+                normalized = self._normalize_recovery_url(candidate)
+                if not normalized or normalized in visited_urls:
+                    continue
+                if normalized not in order:
+                    order[normalized] = order_counter
+                    order_counter += 1
+                best = ranked_candidates.get(normalized, -1)
+                if score > best:
+                    ranked_candidates[normalized] = score
+
+        if not ranked_candidates:
+            return False, None
+
+        candidates = sorted(
+            ranked_candidates.items(),
+            key=lambda item: (-item[1], order[item[0]]),
+        )
+        errors: list[tuple[str, str]] = []
+
+        for candidate, _score in candidates:
+            visited_urls.add(candidate)
+            logger.info(f"[HTML Recovery] Trying extracted candidate: {candidate}")
+            success, error = self.download_file(
+                candidate,
+                output_path,
+                progress_callback,
+                _html_recovery_depth=next_depth,
+                _visited_urls=visited_urls,
             )
-        except PermanentError as e:
-            # Check if it's a 403 or HTML response - might be CDN protection/challenge page.
-            error_msg = str(e)
-            if "403" in error_msg or "Server returned HTML" in error_msg:
-                if "403" in error_msg:
-                    logger.warning("Got 403 error, attempting cloudscraper bypass...")
-                else:
-                    logger.warning("Got HTML response, attempting cloudscraper bypass...")
-                success, bypass_error = self._download_with_cloudscraper(
-                    url, output_path, progress_callback
-                )
-                if success:
-                    logger.info("Successfully downloaded using cloudscraper bypass")
-                    return True, None
-                if bypass_error:
-                    logger.warning(f"cloudscraper bypass also failed: {bypass_error}")
+            if success:
+                logger.info(f"[HTML Recovery] Successfully downloaded via extracted candidate: {candidate}")
+                return True, None
+            errors.append((candidate, error or "Download failed"))
 
-                if "403" in error_msg:
-                    logger.warning("Got 403 error, attempting curl_cffi bypass...")
-                else:
-                    logger.warning("Got HTML response, attempting curl_cffi bypass...")
-                success, bypass_error = self._download_with_curl_cffi(
-                    url, output_path, progress_callback
-                )
-                if success:
-                    logger.info("Successfully downloaded using curl_cffi bypass")
-                    return True, None
-                if bypass_error:
-                    logger.warning(f"curl_cffi bypass also failed: {bypass_error}")
+        detail = "; ".join(f"{candidate} => {reason}" for candidate, reason in errors)
+        return (
+            False,
+            f"HTML recovery tried {len(errors)} extracted candidate URLs: {detail}",
+        )
 
-            # Don't retry permanent failures
-            logger.error(f"Permanent failure: {error_msg}")
-            return False, error_msg
-        except Exception as e:
-            # All retries exhausted
-            error_msg = str(e)
-            logger.error(f"Download failed after all retries: {error_msg}")
-            return False, error_msg
+    @staticmethod
+    def _normalize_recovery_url(url: str) -> str | None:
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
+        return urlunparse(parsed._replace(fragment=""))
 
     def probe_pdf_url(self, url: str) -> bool:
         """
@@ -261,8 +409,11 @@ class FileDownloader:
                         fetcher="requests",
                         error=f"Server returned HTML instead of PDF (Content-Type: {content_type})",
                     )
-                    raise PermanentError(
-                        f"Server returned HTML instead of PDF (Content-Type: {content_type})"
+                    raise HTMLResponseError(
+                        f"Server returned HTML instead of PDF (Content-Type: {content_type})",
+                        url=url,
+                        status_code=response.status_code,
+                        content_type=content_type,
                     )
 
             # Download to temporary location first
