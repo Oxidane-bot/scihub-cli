@@ -197,6 +197,7 @@ The email is saved to `~/.scihub-cli/config.json` and sent only to Unpaywall for
 
 ```
 usage: scihub-cli [-h] [-o OUTPUT] [-m MIRROR] [-t TIMEOUT] [-r RETRIES] [-p PARALLEL]
+                  [--enable-core] [--fast-fail]
                   [--email EMAIL] [-v] [--version] input_file
 
 Download academic papers from Sci-Hub and Unpaywall in batch mode.
@@ -228,6 +229,8 @@ options:
                         Directory for HTML snapshots (default: <output>/trace-html)
   --trace-html-max-chars TRACE_HTML_MAX_CHARS
                         Maximum characters per HTML snapshot file (default: 2000000)
+  --enable-core         Enable CORE source lookups (disabled by default to avoid rate-limit slowdown)
+  --fast-fail           Skip bypass and HTML recovery on permanent failures (faster, may reduce success rate)
   --email EMAIL         Email for Unpaywall API (saves to config file)
   -v, --verbose         Enable verbose logging
   --version             show program's version number and exit
@@ -260,6 +263,15 @@ scihub-cli --to-md --md-output research/markdown papers.txt
 
 # Enable failure diagnostics (source attempts + HTML snapshots in download-report.json)
 scihub-cli --to-md --md-warn-only --trace-html papers.txt
+
+# Fast-fail is enabled by default (and default parallelism is 10)
+scihub-cli -r 1 -t 8 papers.txt
+
+# Disable fast-fail when you want slower but more aggressive recovery
+scihub-cli --no-fast-fail papers.txt
+
+# Opt in to CORE (off by default)
+scihub-cli --enable-core papers.txt
 
 # Specify output directory
 scihub-cli -o research/papers papers.txt

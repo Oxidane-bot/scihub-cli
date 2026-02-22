@@ -53,14 +53,14 @@ class _NoBypassDownloader(FileDownloader):
 def test_downloader_recovers_from_html_by_extracting_pdf_candidates(tmp_path: Path):
     entry_url = "https://example.org/paper.pdf"
     recovered_pdf_url = "https://example.org/files/recovered.pdf"
-    landing_html = (
-        b"<html><body><a href='/files/recovered.pdf'>Download PDF</a></body></html>"
-    )
+    landing_html = b"<html><body><a href='/files/recovered.pdf'>Download PDF</a></body></html>"
 
     session = _FakeSession(
         {
             entry_url: _FakeResponse(landing_html, content_type="text/html"),
-            recovered_pdf_url: _FakeResponse(_make_fake_pdf_bytes(), content_type="application/pdf"),
+            recovered_pdf_url: _FakeResponse(
+                _make_fake_pdf_bytes(), content_type="application/pdf"
+            ),
         }
     )
     downloader = _NoBypassDownloader(session=session, timeout=5)  # type: ignore[arg-type]

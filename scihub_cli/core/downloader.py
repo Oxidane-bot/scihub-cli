@@ -44,18 +44,130 @@ class HTMLResponseError(PermanentError):
 class FileDownloader:
     """Handles pure file downloading operations."""
 
-    def __init__(self, session: Optional[requests.Session] = None, timeout: int = None):
+    _FAST_FAIL_LIGHTWEIGHT_BYPASS_HOSTS = (
+        "mdpi.com",
+        "mdpi-res.com",
+        "seas.upenn.edu",
+        "zhaw.ch",
+        "repository.uantwerpen.be",
+        "orbi.uliege.be",
+        "pangea.stanford.edu",
+        "elib.dlr.de",
+        "sagepub.com",
+        "asiacleanenergyforum.adb.org",
+        "cathi.uacj.mx",
+        "ijltemas.in",
+    )
+    _FAST_FAIL_SKIP_CHALLENGE_DOWNLOAD_HOSTS = (
+        "sciencedirect.com",
+        "researchgate.net",
+    )
+    _ACADEMIC_HOST_MARKERS = (
+        "arxiv.org",
+        "ncbi.nlm.nih.gov",
+        "pmc.ncbi.nlm.nih.gov",
+        "sciencedirect.com",
+        "springer.com",
+        "nature.com",
+        "wiley.com",
+        "onlinelibrary.wiley.com",
+        "tandfonline.com",
+        "sagepub.com",
+        "mdpi.com",
+        "ieeexplore.ieee.org",
+        "acm.org",
+        "jstor.org",
+        "scielo.org",
+        "researchgate.net",
+        "semanticscholar.org",
+        "doaj.org",
+        "hindawi.com",
+        "frontiersin.org",
+        "energy.gov",
+        "ssrn.com",
+        "zenodo.org",
+        "hal.science",
+        "europepmc.org",
+        "link.springer.com",
+        "ideas.repec.org",
+    )
+    _NON_ACADEMIC_HOST_MARKERS = (
+        "tiktok.com",
+        "instagram.com",
+        "facebook.com",
+        "x.com",
+        "twitter.com",
+        "youtube.com",
+        "youtu.be",
+        "reddit.com",
+        "bbc.com",
+        "cnn.com",
+        "abcnews.com",
+        "consumerreports.org",
+        "creativebloq.com",
+        "medium.com",
+        "luxuryestate.com",
+        "campaignlive.com",
+        "campaignasia.com",
+        "healthline.com",
+        "hbr.org",
+        "carscoops.com",
+        "thisismoney.co.uk",
+        "topgear.com",
+        "tesla.com",
+        "jaguar.com",
+        "wikipedia.org",
+        "thestreet.com",
+        "washingtonstand.com",
+        "thetrailblazer.co.uk",
+    )
+    _FAST_FAIL_DEADLINE_MIN_SECONDS_FOR_GRACE = 5.0
+    _FAST_FAIL_DEADLINE_PROGRESS_MIN_BYTES = 256 * 1024
+    _FAST_FAIL_DEADLINE_PROGRESS_GRACE_SECONDS = 6.0
+    _FAST_FAIL_DEADLINE_MAX_EXTENSIONS = 1
+
+    def __init__(
+        self,
+        session: Optional[requests.Session] = None,
+        timeout: int = None,
+        fast_fail: bool = False,
+        retries: int | None = None,
+        download_deadline_seconds: float | None = None,
+    ):
         self.session = session or BasicSession(timeout or settings.timeout)
         self.timeout = timeout or settings.timeout
+        self.fast_fail = fast_fail
 
         # Retry configuration for downloads
         self.retry_config = DownloadRetryConfig()
+        if retries is not None:
+            self.retry_config.max_attempts = max(1, int(retries))
+        elif self.fast_fail:
+            # Fast-fail mode prefers quick convergence; keep a single attempt.
+            self.retry_config.max_attempts = 1
+        if self.retry_config.max_attempts <= 1:
+            self.retry_config.base_delay = 0.0
+            self.retry_config.max_delay = 0.0
+        elif self.fast_fail:
+            self.retry_config.base_delay = min(self.retry_config.base_delay, 0.5)
+            self.retry_config.max_delay = min(self.retry_config.max_delay, 2.0)
+
+        if download_deadline_seconds is None:
+            if self.fast_fail:
+                download_deadline_seconds = max(8.0, float(self.timeout) * 2.5)
+            else:
+                download_deadline_seconds = max(30.0, float(self.timeout) * 6.0)
+        self.download_deadline_seconds = (
+            float(download_deadline_seconds)
+            if download_deadline_seconds is not None and download_deadline_seconds > 0
+            else None
+        )
 
         # Rate limiting for curl_cffi bypass (per-domain)
         self._last_bypass_time = {}  # domain -> timestamp
-        self._bypass_delay = 2.0  # seconds between bypass requests to same domain
+        self._bypass_delay = 0.2 if self.fast_fail else 2.0  # seconds between bypass requests
         self._trace_local = threading.local()
-        self._html_recovery_max_depth = 1
+        self._html_recovery_max_depth = 0 if self.fast_fail else 1
         self._html_recovery_min_score = 750
 
     def push_trace_context(
@@ -141,6 +253,15 @@ class FileDownloader:
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
+        if self._should_fast_fail_non_academic_url(url):
+            error_msg = "Skipped non-academic URL in fast-fail mode"
+            logger.info(f"{error_msg}: {url}")
+            return False, error_msg
+        if self._should_fast_fail_skip_challenge_pdf_url(url):
+            error_msg = "Skipped challenge-heavy PDF URL in fast-fail mode"
+            logger.info(f"{error_msg}: {url}")
+            return False, error_msg
+
         visited_urls = _visited_urls if _visited_urls is not None else set()
         normalized_url = self._normalize_recovery_url(url)
         if normalized_url:
@@ -150,8 +271,15 @@ class FileDownloader:
         self._trace_local.download_html_events = []
 
         try:
+
             def _attempt_download():
-                return self._download_once(url, output_path, progress_callback)
+                deadline_ts = self._new_download_deadline()
+                return self._download_once(
+                    url,
+                    output_path,
+                    progress_callback,
+                    deadline_ts=deadline_ts,
+                )
 
             try:
                 return retry_with_classification(
@@ -160,6 +288,21 @@ class FileDownloader:
             except PermanentError as e:
                 # Check if it's a 403 or HTML response - might be CDN protection/challenge page.
                 error_msg = str(e)
+                if self.fast_fail:
+                    fallback_success, fallback_error = self._try_fast_fail_lightweight_bypass(
+                        url=url,
+                        output_path=output_path,
+                        progress_callback=progress_callback,
+                        trigger_error=error_msg,
+                    )
+                    if fallback_success:
+                        return True, None
+                    if fallback_error:
+                        logger.debug(f"Fast-fail lightweight bypass failed: {fallback_error}")
+                    logger.info("Fast-fail enabled: skipping bypass and HTML recovery")
+                    logger.error(f"Permanent failure: {error_msg}")
+                    return False, error_msg
+
                 if isinstance(e, HTMLResponseError) or "403" in error_msg:
                     if "403" in error_msg:
                         logger.warning("Got 403 error, attempting cloudscraper bypass...")
@@ -206,6 +349,16 @@ class FileDownloader:
             except Exception as e:
                 # All retries exhausted
                 error_msg = str(e)
+                fallback_success, fallback_error = self._try_fast_fail_lightweight_bypass(
+                    url=url,
+                    output_path=output_path,
+                    progress_callback=progress_callback,
+                    trigger_error=error_msg,
+                )
+                if fallback_success:
+                    return True, None
+                if fallback_error:
+                    logger.debug(f"Fast-fail lightweight bypass failed: {fallback_error}")
                 logger.error(f"Download failed after all retries: {error_msg}")
                 return False, error_msg
         finally:
@@ -282,7 +435,9 @@ class FileDownloader:
                 _visited_urls=visited_urls,
             )
             if success:
-                logger.info(f"[HTML Recovery] Successfully downloaded via extracted candidate: {candidate}")
+                logger.info(
+                    f"[HTML Recovery] Successfully downloaded via extracted candidate: {candidate}"
+                )
                 return True, None
             errors.append((candidate, error or "Download failed"))
 
@@ -298,6 +453,80 @@ class FileDownloader:
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return None
         return urlunparse(parsed._replace(fragment=""))
+
+    def _try_fast_fail_lightweight_bypass(
+        self,
+        *,
+        url: str,
+        output_path: str,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]],
+        trigger_error: str,
+    ) -> tuple[bool, str | None]:
+        if not self._should_try_fast_fail_lightweight_bypass(url, trigger_error):
+            return False, None
+        logger.info(f"Fast-fail lightweight bypass attempt (curl_cffi): {url}")
+        success, error = self._download_with_curl_cffi(url, output_path, progress_callback)
+        if success:
+            return True, None
+        if not self._should_retry_fast_fail_lightweight_bypass(error):
+            return False, error
+        logger.info(f"Fast-fail lightweight bypass retry (curl_cffi): {url}")
+        retry_success, retry_error = self._download_with_curl_cffi(
+            url, output_path, progress_callback
+        )
+        if retry_success:
+            return True, None
+        return False, retry_error or error
+
+    def _should_try_fast_fail_lightweight_bypass(self, url: str, error_msg: str) -> bool:
+        if not self.fast_fail:
+            return False
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        host = parsed.netloc.lower()
+        if not any(marker in host for marker in self._FAST_FAIL_LIGHTWEIGHT_BYPASS_HOSTS):
+            return False
+        path_lower = parsed.path.lower()
+        query_lower = (parsed.query or "").lower()
+        if not (path_lower.endswith(".pdf") or "/pdf" in path_lower or ".pdf" in query_lower):
+            return False
+        lowered = (error_msg or "").lower()
+        if (
+            "server returned html" in lowered
+            and "mdpi.com" not in host
+            and "mdpi-res.com" not in host
+        ):
+            return False
+        return any(
+            token in lowered
+            for token in (
+                "403",
+                "timeout",
+                "connection error",
+                "server returned html",
+                "download deadline exceeded",
+                "http 429",
+                "http 5",
+            )
+        )
+
+    @staticmethod
+    def _should_retry_fast_fail_lightweight_bypass(error_msg: str | None) -> bool:
+        lowered = (error_msg or "").lower()
+        return any(
+            token in lowered
+            for token in (
+                "timeout",
+                "timed out",
+                "connection error",
+                "temporarily unavailable",
+                "http 429",
+                "http 5",
+                "ssl",
+                "eof",
+            )
+        )
 
     def probe_pdf_url(self, url: str) -> bool:
         """
@@ -341,6 +570,8 @@ class FileDownloader:
         url: str,
         output_path: str,
         progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+        *,
+        deadline_ts: float | None = None,
     ) -> tuple[bool, Optional[str]]:
         """
         Single download attempt with error classification.
@@ -354,14 +585,21 @@ class FileDownloader:
         import tempfile
 
         try:
-            response = self.session.get(url, timeout=self.timeout, stream=True)
+            self._check_deadline(deadline_ts)
+            response = self.session.get(
+                url,
+                timeout=self._effective_timeout(deadline_ts),
+                stream=True,
+            )
 
             # Classify HTTP errors
             if response.status_code == 404:
                 self._emit_html_snapshot(
                     url=url,
                     status_code=response.status_code,
-                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    html=response.text
+                    if "html" in response.headers.get("Content-Type", "").lower()
+                    else None,
                     fetcher="requests",
                     error="File not found (404)",
                 )
@@ -370,7 +608,9 @@ class FileDownloader:
                 self._emit_html_snapshot(
                     url=url,
                     status_code=response.status_code,
-                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    html=response.text
+                    if "html" in response.headers.get("Content-Type", "").lower()
+                    else None,
                     fetcher="requests",
                     error="Access denied (403)",
                 )
@@ -379,7 +619,9 @@ class FileDownloader:
                 self._emit_html_snapshot(
                     url=url,
                     status_code=response.status_code,
-                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    html=response.text
+                    if "html" in response.headers.get("Content-Type", "").lower()
+                    else None,
                     fetcher="requests",
                     error="HTTP 202",
                 )
@@ -388,7 +630,9 @@ class FileDownloader:
                 self._emit_html_snapshot(
                     url=url,
                     status_code=response.status_code,
-                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    html=response.text
+                    if "html" in response.headers.get("Content-Type", "").lower()
+                    else None,
                     fetcher="requests",
                     error=f"HTTP {response.status_code}",
                 )
@@ -421,10 +665,34 @@ class FileDownloader:
             total_header = response.headers.get("Content-Length")
             total_bytes = int(total_header) if total_header and total_header.isdigit() else None
             bytes_downloaded = 0
+            deadline_state = {"ts": deadline_ts, "extensions": 0}
+
+            def _check_deadline_with_progress() -> None:
+                current_deadline = deadline_state["ts"]
+                if current_deadline is None:
+                    return
+                now = time.monotonic()
+                if now <= current_deadline:
+                    return
+                if self._can_extend_deadline_for_active_fast_fail_download(
+                    url=url,
+                    bytes_downloaded=bytes_downloaded,
+                    extensions_used=deadline_state["extensions"],
+                ):
+                    deadline_state["ts"] = now + self._FAST_FAIL_DEADLINE_PROGRESS_GRACE_SECONDS
+                    deadline_state["extensions"] += 1
+                    logger.info(
+                        "[Fast-fail] Extending active download deadline by %.1fs for %s",
+                        self._FAST_FAIL_DEADLINE_PROGRESS_GRACE_SECONDS,
+                        url,
+                    )
+                    return
+                self._check_deadline(current_deadline)
 
             try:
                 with os.fdopen(temp_fd, "wb") as f:
                     for chunk in response.iter_content(chunk_size=settings.CHUNK_SIZE):
+                        _check_deadline_with_progress()
                         if chunk:
                             f.write(chunk)
                             bytes_downloaded += len(chunk)
@@ -441,6 +709,7 @@ class FileDownloader:
                         )
 
                 # If valid, move to final destination
+                _check_deadline_with_progress()
                 shutil.move(temp_path, output_path)
                 return True, None
 
@@ -490,7 +759,9 @@ class FileDownloader:
                 self._emit_html_snapshot(
                     url=url,
                     status_code=response.status_code,
-                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    html=response.text
+                    if "html" in response.headers.get("Content-Type", "").lower()
+                    else None,
                     fetcher="cloudscraper",
                     error=f"HTTP {response.status_code}",
                 )
@@ -593,7 +864,9 @@ class FileDownloader:
                 self._emit_html_snapshot(
                     url=url,
                     status_code=response.status_code,
-                    html=response.text if "html" in response.headers.get("Content-Type", "").lower() else None,
+                    html=response.text
+                    if "html" in response.headers.get("Content-Type", "").lower()
+                    else None,
                     fetcher="curl_cffi",
                     error=f"HTTP {response.status_code}",
                 )
@@ -641,7 +914,13 @@ class FileDownloader:
             logger.debug(f"[curl_cffi] Download failed: {e}")
             return False, str(e)
 
-    def get_page_content(self, url: str) -> tuple[Optional[str], Optional[int]]:
+    def get_page_content(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float | None = None,
+        force_challenge_bypass: bool = False,
+    ) -> tuple[Optional[str], Optional[int]]:
         """
         Get HTML content from a URL with automatic curl_cffi fallback on 403.
 
@@ -649,7 +928,10 @@ class FileDownloader:
             Tuple of (html_content, status_code)
         """
         try:
-            response = self.session.get(url, timeout=self.timeout)
+            request_timeout = float(self.timeout)
+            if timeout_seconds is not None:
+                request_timeout = max(1.0, float(timeout_seconds))
+            response = self.session.get(url, timeout=request_timeout)
             self._emit_html_snapshot(
                 url=url,
                 status_code=response.status_code,
@@ -659,15 +941,20 @@ class FileDownloader:
 
             # If we get 403, try curl_cffi bypass
             if response.status_code == 403:
+                if self.fast_fail and not force_challenge_bypass:
+                    logger.info("Fast-fail enabled: skipping 403 bypass for page access")
+                    return response.text, response.status_code
                 logger.warning("Got 403 accessing page, attempting cloudscraper bypass...")
-                html, status = self._get_page_with_cloudscraper(url)
+                html, status = self._get_page_with_cloudscraper(
+                    url, timeout_seconds=request_timeout
+                )
                 if html:
                     logger.info("Successfully fetched page using cloudscraper bypass")
                     return html, status
                 logger.warning("cloudscraper bypass also failed for page access")
 
                 logger.warning("Got 403 accessing page, attempting curl_cffi bypass...")
-                html, status = self._get_page_with_curl_cffi(url)
+                html, status = self._get_page_with_curl_cffi(url, timeout_seconds=request_timeout)
                 if html:
                     logger.info("Successfully fetched page using curl_cffi bypass")
                     return html, status
@@ -685,7 +972,106 @@ class FileDownloader:
             )
             return None, None
 
-    def _get_page_with_cloudscraper(self, url: str) -> tuple[Optional[str], Optional[int]]:
+    def _new_download_deadline(self) -> float | None:
+        if self.download_deadline_seconds is None:
+            return None
+        return time.monotonic() + self.download_deadline_seconds
+
+    def _effective_timeout(self, deadline_ts: float | None) -> float:
+        if deadline_ts is None:
+            return float(self.timeout)
+        remaining = deadline_ts - time.monotonic()
+        return max(1.0, min(float(self.timeout), remaining))
+
+    def _check_deadline(self, deadline_ts: float | None) -> None:
+        if deadline_ts is None:
+            return
+        if time.monotonic() <= deadline_ts:
+            return
+        limit = self.download_deadline_seconds
+        if limit is None:
+            raise RetryableError("Download deadline exceeded")
+        raise RetryableError(f"Download deadline exceeded ({limit:.1f}s)")
+
+    def _can_extend_deadline_for_active_fast_fail_download(
+        self,
+        *,
+        url: str,
+        bytes_downloaded: int,
+        extensions_used: int,
+    ) -> bool:
+        if not self.fast_fail:
+            return False
+        if (
+            self.download_deadline_seconds is None
+            or self.download_deadline_seconds < self._FAST_FAIL_DEADLINE_MIN_SECONDS_FOR_GRACE
+        ):
+            return False
+        if extensions_used >= self._FAST_FAIL_DEADLINE_MAX_EXTENSIONS:
+            return False
+        if bytes_downloaded < self._FAST_FAIL_DEADLINE_PROGRESS_MIN_BYTES:
+            return False
+
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        host = parsed.netloc.lower()
+        if self._is_obvious_non_academic_host(host):
+            return False
+        path = (parsed.path or "").lower()
+        query = (parsed.query or "").lower()
+        return self._looks_like_pdf_download_path(path=path, query=query)
+
+    @staticmethod
+    def _looks_like_pdf_download_path(*, path: str, query: str) -> bool:
+        return (
+            path.endswith(".pdf")
+            or ".pdf" in path
+            or ".pdf" in query
+            or "/pdf" in path
+            or "/download/" in path
+            or "/bitstream/" in path
+            or "/server/api/core/bitstreams/" in path
+        )
+
+    @classmethod
+    def _is_obvious_non_academic_host(cls, host: str) -> bool:
+        if not host:
+            return False
+        if host.endswith(".edu") or host.endswith(".gov") or ".ac." in host:
+            return False
+        if any(marker in host for marker in cls._ACADEMIC_HOST_MARKERS):
+            return False
+        return any(marker in host for marker in cls._NON_ACADEMIC_HOST_MARKERS)
+
+    def _should_fast_fail_non_academic_url(self, url: str) -> bool:
+        if not self.fast_fail:
+            return False
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        host = parsed.netloc.lower()
+        return self._is_obvious_non_academic_host(host)
+
+    def _should_fast_fail_skip_challenge_pdf_url(self, url: str) -> bool:
+        if not self.fast_fail:
+            return False
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        host = parsed.netloc.lower()
+        if not any(marker in host for marker in self._FAST_FAIL_SKIP_CHALLENGE_DOWNLOAD_HOSTS):
+            return False
+        path = (parsed.path or "").lower()
+        query = (parsed.query or "").lower()
+        return path.endswith(".pdf") or ".pdf" in query or "/pdf" in path or "pdfft" in path
+
+    def _get_page_with_cloudscraper(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> tuple[Optional[str], Optional[int]]:
         """
         Fetch page content using cloudscraper to solve JS challenges.
 
@@ -702,7 +1088,10 @@ class FileDownloader:
 
         try:
             scraper = cloudscraper.create_scraper()
-            response = scraper.get(url, timeout=self.timeout)
+            request_timeout = float(self.timeout)
+            if timeout_seconds is not None:
+                request_timeout = max(1.0, float(timeout_seconds))
+            response = scraper.get(url, timeout=request_timeout)
             logger.debug(f"[cloudscraper] Page fetch status: {response.status_code}")
             self._emit_html_snapshot(
                 url=url,
@@ -722,7 +1111,12 @@ class FileDownloader:
             )
             return None, None
 
-    def _get_page_with_curl_cffi(self, url: str) -> tuple[Optional[str], Optional[int]]:
+    def _get_page_with_curl_cffi(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> tuple[Optional[str], Optional[int]]:
         """
         Fetch page content using curl_cffi with browser impersonation.
 
@@ -754,7 +1148,10 @@ class FileDownloader:
 
             # Use Chrome 110 impersonation
             logger.debug(f"[curl_cffi] Fetching page with Chrome 110 impersonation: {url}")
-            response = cf_requests.get(url, impersonate="chrome110", timeout=self.timeout)
+            request_timeout = float(self.timeout)
+            if timeout_seconds is not None:
+                request_timeout = max(1.0, float(timeout_seconds))
+            response = cf_requests.get(url, impersonate="chrome110", timeout=request_timeout)
 
             # Update last request time for this domain
             self._last_bypass_time[domain] = time.time()

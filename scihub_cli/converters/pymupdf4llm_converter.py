@@ -43,9 +43,7 @@ class Pymupdf4llmConverter:
 
         return True, None
 
-    def _convert_with_fallbacks(
-        self, pymupdf4llm, pdf_path: str
-    ) -> tuple[str | None, str | None]:
+    def _convert_with_fallbacks(self, pymupdf4llm, pdf_path: str) -> tuple[str | None, str | None]:
         errors: list[str] = []
 
         # Primary attempt: default pymupdf4llm behavior.

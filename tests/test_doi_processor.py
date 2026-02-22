@@ -17,3 +17,8 @@ def test_normalize_doi_removes_internal_whitespace():
 
 def test_normalize_doi_from_url():
     assert DOIProcessor.normalize_doi("https://doi.org/10.1000/xyz") == "10.1000/xyz"
+
+
+def test_normalize_doi_keeps_invalid_doi_org_url():
+    identifier = "https://doi.org/10.1016"
+    assert DOIProcessor.normalize_doi(identifier) == identifier

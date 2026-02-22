@@ -151,6 +151,37 @@ def main():
         default=2_000_000,
         help="Maximum characters per HTML snapshot file (default: 2000000)",
     )
+    parser.add_argument(
+        "--enable-core",
+        action="store_true",
+        help="Enable CORE source lookups (disabled by default to avoid rate-limit slowdown)",
+    )
+    parser.add_argument(
+        "--disable-core",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--fast-fail",
+        dest="fast_fail",
+        action="store_true",
+        default=True,
+        help=(
+            "Enable fast-fail profile (default): skip expensive bypass/recovery on permanent "
+            "failures for better throughput"
+        ),
+    )
+    parser.add_argument(
+        "--no-fast-fail",
+        dest="fast_fail",
+        action="store_false",
+        help="Disable fast-fail profile and allow slower but more aggressive recovery behavior",
+    )
+    parser.add_argument(
+        "--download-deadline",
+        type=float,
+        help="Hard per-attempt download deadline in seconds (overrides auto profile)",
+    )
     parser.add_argument("--email", help="Email for Unpaywall API (saves to config file)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--version", action="version", version=f"scihub-cli v{__version__}")
@@ -191,6 +222,9 @@ def main():
         trace_html=args.trace_html,
         trace_html_dir=args.trace_html_dir,
         trace_html_max_chars=args.trace_html_max_chars,
+        enable_core=args.enable_core and not args.disable_core,
+        fast_fail=args.fast_fail,
+        download_deadline_seconds=args.download_deadline,
     )
 
     # Download papers

@@ -7,3 +7,5 @@ def test_arxiv_can_handle_urls():
     assert source.can_handle("https://arxiv.org/abs/1202.2745")
     assert source.can_handle("https://arxiv.org/abs/1202.2745v2")
     assert source.can_handle("https://arxiv.org/pdf/1202.2745.pdf")
+    assert source.can_handle("https://arxiv.org/html/1202.2745")
+    assert source.can_handle("https://arxiv.org/html/1202.2745v2")

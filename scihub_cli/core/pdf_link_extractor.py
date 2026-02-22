@@ -23,10 +23,63 @@ _RAW_URL_PATTERNS = (
     re.compile(r"https?://[^\s\"'<>]+", re.I),
     re.compile(r"(?<![\w/])(?:/[^\s\"'<>]+\.pdf(?:\?[^\s\"'<>]*)?)", re.I),
     re.compile(r"(?<![\w/])(?:/download/[^\s\"'<>]+)", re.I),
-    re.compile(r"(?<![\w/])(?:/server/api/core/bitstreams/[^\s\"'<>]+/content(?:\?[^\s\"'<>]*)?)", re.I),
+    re.compile(
+        r"(?<![\w/])(?:/server/api/core/bitstreams/[^\s\"'<>]+/content(?:\?[^\s\"'<>]*)?)", re.I
+    ),
 )
 
 _CLOUDFLARE_PATH_PATTERN = re.compile(r'(?:cUPMDTk|fa)\s*:\s*"([^"]+)"', re.I)
+_SCRIPT_PDF_URL_PATTERN = re.compile(
+    r"""(?:
+            ["'](?:pdfUrl|pdf_url|fullTextPdfUrl|full_text_pdf_url|downloadUrl|download_url)["']\s*:\s*["']([^"']+)["']
+        )
+    """,
+    re.I | re.X,
+)
+
+_TRACKER_HOST_MARKERS = (
+    "googletagmanager.com",
+    "google-analytics.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "facebook.com",
+    "connect.facebook.net",
+    "instagram.com",
+    "twitter.com",
+    "x.com",
+    "tiktok.com",
+    "hotjar.com",
+    "segment.com",
+)
+_NON_PDF_ASSET_EXTENSIONS = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".svg",
+    ".ico",
+    ".css",
+    ".js",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".mp4",
+    ".mp3",
+    ".webm",
+    ".m3u8",
+    ".ts",
+    ".zip",
+)
+
+_SCIENCEDIRECT_PII_PATH = re.compile(
+    r"/science/article(?:/abs)?/pii/([A-Z0-9]+)",
+    re.I,
+)
+_SCIENCEDIRECT_PII_TOKEN = re.compile(r"""["']pii["']\s*:\s*["']([A-Z0-9]+)["']""", re.I)
+_TANDFONLINE_DOI_PATH = re.compile(r"/doi/(?:abs|full)/(.+)", re.I)
+_NATURE_ARTICLE_PATH = re.compile(r"/articles/([^/?#]+)", re.I)
 
 
 def extract_ranked_pdf_candidates(html: str, base_url: str) -> list[tuple[int, str]]:
@@ -40,6 +93,7 @@ def extract_ranked_pdf_candidates(html: str, base_url: str) -> list[tuple[int, s
         return []
 
     soup = BeautifulSoup(html, "html.parser")
+    html_unescaped = unescape(html)
     scored: dict[str, int] = {}
     order: dict[str, int] = {}
     order_counter = 0
@@ -98,10 +152,16 @@ def extract_ranked_pdf_candidates(html: str, base_url: str) -> list[tuple[int, s
         _add(href, score)
 
     # 5) Raw URL-like tokens in HTML source
-    for pattern in _RAW_URL_PATTERNS:
-        for match in pattern.findall(html):
-            token = match[0] if isinstance(match, tuple) else match
-            _add(token, _score_url(token))
+    for raw_blob in (html, html_unescaped):
+        for pattern in _RAW_URL_PATTERNS:
+            for match in pattern.findall(raw_blob):
+                token = match[0] if isinstance(match, tuple) else match
+                _add(token, _score_url(token))
+
+    # 5.5) URL-like values hidden in inline script assignments
+    for raw_blob in (html, html_unescaped):
+        for token in _SCRIPT_PDF_URL_PATTERN.findall(raw_blob):
+            _add(token, _score_url(token) + 120)
 
     # 6) Cloudflare challenge paths (often escaped)
     for token in _extract_cloudflare_tokens(html):
@@ -115,6 +175,10 @@ def extract_ranked_pdf_candidates(html: str, base_url: str) -> list[tuple[int, s
     for token, score in _extract_drupal_candidates(soup):
         _add(token, score)
 
+    # 9) Publisher-specific URL derivations from known article URL patterns
+    for token, score in _extract_publisher_candidates(base_url, html_unescaped):
+        _add(token, score)
+
     ranked = sorted(
         ((score, url) for url, score in scored.items()),
         key=lambda item: (-item[0], order[item[1]]),
@@ -124,7 +188,19 @@ def extract_ranked_pdf_candidates(html: str, base_url: str) -> list[tuple[int, s
 
 def extract_pdf_candidates(html: str, base_url: str, *, min_score: int = 1) -> list[str]:
     """Extract PDF-like candidates from HTML and return URLs only."""
-    return [url for score, url in extract_ranked_pdf_candidates(html, base_url) if score >= min_score]
+    return [
+        url for score, url in extract_ranked_pdf_candidates(html, base_url) if score >= min_score
+    ]
+
+
+def derive_publisher_pdf_candidates(base_url: str, html: str | None = None) -> list[str]:
+    """
+    Derive direct PDF candidates from known publisher URL patterns.
+
+    This is useful as a prefetch strategy before fetching/parsing full HTML pages.
+    """
+    html_unescaped = unescape(html or "")
+    return [url for url, _score in _extract_publisher_candidates(base_url, html_unescaped)]
 
 
 def _score_url(url: str) -> int:
@@ -133,6 +209,14 @@ def _score_url(url: str) -> int:
 
     url_lower = url.lower()
     if url_lower.startswith(_SKIP_SCHEMES):
+        return 0
+
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if any(marker in host for marker in _TRACKER_HOST_MARKERS):
+        return 0
+    path_lower = parsed.path.lower()
+    if any(path_lower.endswith(ext) for ext in _NON_PDF_ASSET_EXTENSIONS):
         return 0
 
     score = 0
@@ -156,6 +240,16 @@ def _score_url(url: str) -> int:
         score += 500
     if "__cf_chl" in url_lower:
         score += 100
+    if "sciencedirect.com/science/article/pii/" in url_lower and "/pdfft" in url_lower:
+        score += 850
+    if "nature.com/articles/" in url_lower and ".pdf" in url_lower:
+        score += 850
+    if "tandfonline.com/doi/pdf/" in url_lower:
+        score += 850
+    if "mdpi.com/" in url_lower and "/pdf" in url_lower:
+        score += 700
+    if host.endswith(".edu") or ".ac." in host or host.endswith(".gov"):
+        score += 60
 
     return score
 
@@ -188,6 +282,61 @@ def _extract_cloudflare_tokens(html: str) -> list[str]:
         token = _decode_escaped_token(match).strip()
         if token:
             out.append(token)
+    return out
+
+
+def _extract_publisher_candidates(base_url: str, html_unescaped: str = "") -> list[tuple[str, int]]:
+    out: list[tuple[str, int]] = []
+    parsed = urlparse(base_url)
+    host = parsed.netloc.lower()
+    path = parsed.path
+
+    # Elsevier / ScienceDirect article pages.
+    if "sciencedirect.com" in host:
+        pii = None
+        m = _SCIENCEDIRECT_PII_PATH.search(path)
+        if m:
+            pii = m.group(1)
+        else:
+            m2 = _SCIENCEDIRECT_PII_TOKEN.search(html_unescaped)
+            if m2:
+                pii = m2.group(1)
+        if pii:
+            out.append((f"https://www.sciencedirect.com/science/article/pii/{pii}/pdfft", 1100))
+            out.append(
+                (
+                    f"https://www.sciencedirect.com/science/article/pii/{pii}/pdfft?isDTMRedir=true&download=true",
+                    1150,
+                )
+            )
+
+    # Nature article pages.
+    if "nature.com" in host:
+        m = _NATURE_ARTICLE_PATH.search(path)
+        if m:
+            article_id = m.group(1)
+            out.append((f"https://www.nature.com/articles/{article_id}.pdf", 1100))
+
+    # Taylor & Francis.
+    if "tandfonline.com" in host:
+        m = _TANDFONLINE_DOI_PATH.search(path)
+        if m:
+            doi = m.group(1).lstrip("/")
+            out.append((f"https://www.tandfonline.com/doi/pdf/{doi}", 1050))
+
+    # MDPI article pages.
+    if "mdpi.com" in host:
+        cleaned_path = path.rstrip("/")
+        if cleaned_path and not cleaned_path.lower().endswith("/pdf"):
+            out.append((f"https://www.mdpi.com{cleaned_path}/pdf", 980))
+
+    # arXiv HTML landing pages.
+    if "arxiv.org" in host:
+        m = re.search(r"/html/([^/?#]+)", path, re.I)
+        if m:
+            arxiv_id = m.group(1)
+            out.append((f"https://arxiv.org/pdf/{arxiv_id}.pdf", 1100))
+
     return out
 
 

@@ -31,7 +31,10 @@ class DOIProcessor:
             path = parsed.path
             # Extract DOI from common URL patterns
             if "doi.org" in parsed.netloc:
-                return path.strip("/")
+                doi_candidate = path.strip("/")
+                if re.match(cls.DOI_PATTERN, doi_candidate):
+                    return doi_candidate
+                return identifier
 
             # Try to find DOI in the URL path
             doi_match = re.search(cls.DOI_PATTERN, identifier)

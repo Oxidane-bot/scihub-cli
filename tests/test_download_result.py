@@ -94,6 +94,21 @@ class _CoreFallbackSource(PaperSource):
         }
 
 
+class _PMCFallbackSource(PaperSource):
+    def __init__(self, *, primary_url: str):
+        self.primary_url = primary_url
+
+    @property
+    def name(self) -> str:
+        return "PMC"
+
+    def can_handle(self, doi: str) -> bool:  # noqa: ARG002
+        return True
+
+    def get_pdf_url(self, doi: str) -> str | None:  # noqa: ARG002
+        return self.primary_url
+
+
 class _StubConverter:
     def __init__(self, *, fail: bool = False):
         self.fail = fail
@@ -285,3 +300,56 @@ def test_core_download_failure_reports_all_candidate_urls(tmp_path: Path):
     assert primary_url in result.error
     assert source_fallback_url in result.error
     assert links_fallback_url in result.error
+
+
+def test_pmc_download_falls_back_to_europepmc_when_primary_returns_html(tmp_path: Path):
+    pmc_id = "PMC1234567"
+    primary_url = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmc_id}/pdf/main.pdf"
+    backend_url = f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf"
+    fallback_url = f"https://europepmc.org/articles/{pmc_id}?pdf=render"
+
+    session = _FakeSession(
+        {
+            primary_url: b"<html>Preparing to download ...</html>",
+            backend_url: _make_fake_pdf_bytes(),
+            fallback_url: _make_fake_pdf_bytes(),
+        }
+    )
+    downloader = FileDownloader(session=session, timeout=5, fast_fail=True, retries=1)  # type: ignore[arg-type]
+
+    source_manager = SourceManager(
+        sources=[_PMCFallbackSource(primary_url=primary_url)],
+        enable_year_routing=False,
+    )
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        downloader=downloader,
+        source_manager=source_manager,
+        fast_fail=True,
+    )
+
+    result = client.download_paper(f"https://pmc.ncbi.nlm.nih.gov/articles/{pmc_id}/")
+
+    assert result.success
+    assert result.download_url in {backend_url, fallback_url}
+    assert result.file_path and Path(result.file_path).exists()
+
+
+def test_collect_download_candidates_skips_europepmc_for_named_pmc_pdf(tmp_path: Path):
+    primary_url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC7654321/pdf/entropy-25-00882.pdf"
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        source_manager=SourceManager(sources=[DirectPDFSource()], enable_year_routing=False),
+    )
+
+    candidates = client._collect_download_candidates(
+        primary_url=primary_url,
+        source="PMC",
+        metadata=None,
+    )
+
+    assert candidates == [primary_url]

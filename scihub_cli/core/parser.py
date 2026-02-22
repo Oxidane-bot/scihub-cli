@@ -9,12 +9,15 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 from ..utils.logging import get_logger
+from .pdf_link_extractor import extract_ranked_pdf_candidates
 
 logger = get_logger(__name__)
 
 
 class ContentParser:
     """Handles HTML parsing and URL extraction."""
+
+    _FALLBACK_MIN_SCORE = 850
 
     def __init__(self):
         pass
@@ -95,6 +98,18 @@ class ContentParser:
                 full_url = self._fix_url_format(download_link, base_mirror)
                 logger.debug(f"Found download link with pattern {pattern}: {full_url}")
                 return self._clean_url(full_url)
+
+        # Fallback to generic high-confidence PDF extraction for JS-heavy pages.
+        # Keep a high threshold so challenge/tracker tokens are ignored.
+        for score, candidate in extract_ranked_pdf_candidates(html_content, base_mirror):
+            lowered = candidate.lower()
+            if score < self._FALLBACK_MIN_SCORE:
+                continue
+            if ".pdf" not in lowered and "/downloads/" not in lowered and "/pdf/" not in lowered:
+                continue
+            full_url = self._fix_url_format(candidate, base_mirror)
+            logger.debug(f"Found download link via ranked fallback (score={score}): {full_url}")
+            return self._clean_url(full_url)
 
         logger.warning("Could not find download URL in HTML")
         return None

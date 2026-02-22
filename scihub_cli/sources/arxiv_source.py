@@ -228,11 +228,13 @@ class ArxivSource(PaperSource):
             domain = parsed.netloc.lower()
             if "arxiv.org" in domain:
                 path = parsed.path.lstrip("/")
-                for prefix in ("abs/", "pdf/", "e-print/"):
+                for prefix in ("abs/", "pdf/", "e-print/", "html/"):
                     if path.startswith(prefix):
                         candidate = path[len(prefix) :]
                         if candidate.endswith(".pdf"):
                             candidate = candidate[: -len(".pdf")]
+                        if "/" in candidate:
+                            candidate = candidate.split("/", 1)[0]
                         clean = candidate
                         break
 

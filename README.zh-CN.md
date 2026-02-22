@@ -174,6 +174,7 @@ scihub-cli papers.txt --email your-email@university.edu
 
 ```
 用法: scihub-cli [-h] [-o OUTPUT] [-m MIRROR] [-t TIMEOUT] [-r RETRIES] [-p PARALLEL]
+                 [--enable-core] [--fast-fail]
                  [--email EMAIL] [-v] [--version] 输入文件
 
 批量下载学术论文（Sci-Hub、Unpaywall、arXiv、CORE）。
@@ -205,6 +206,8 @@ scihub-cli papers.txt --email your-email@university.edu
                         HTML 快照目录（默认: <output>/trace-html）
   --trace-html-max-chars TRACE_HTML_MAX_CHARS
                         每个 HTML 快照的最大字符数（默认: 2000000）
+  --enable-core         启用 CORE 来源查询（默认关闭，避免限流导致变慢）
+  --fast-fail           永久失败时跳过 bypass 和 HTML 恢复（更快，但可能降低成功率）
   --email EMAIL         Unpaywall API 邮箱（会保存到配置文件）
   -v, --verbose         启用详细日志
   --version             显示程序版本号并退出
@@ -225,6 +228,15 @@ scihub-cli --to-md --md-output research/markdown papers.txt
 
 # 开启失败诊断（download-report.json 中包含 source attempts 和 HTML 快照）
 scihub-cli --to-md --md-warn-only --trace-html papers.txt
+
+# 默认已启用 fast-fail（默认并发为 10）
+scihub-cli -r 1 -t 8 papers.txt
+
+# 若希望更激进的恢复策略，可关闭 fast-fail
+scihub-cli --no-fast-fail papers.txt
+
+# 需要时再启用 CORE（默认关闭）
+scihub-cli --enable-core papers.txt
 
 # 指定输出目录
 scihub-cli -o research/papers papers.txt

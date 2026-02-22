@@ -14,6 +14,9 @@ dist/
 downloads/
 logs/
 memory-bank/
+benchmarks/
+.tmp/
+.last_benchmark_run_dir
 
 # 系统文件
 .DS_Store

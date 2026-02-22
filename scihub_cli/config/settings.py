@@ -14,7 +14,7 @@ class Settings:
     DEFAULT_OUTPUT_DIR = "./downloads"
     DEFAULT_TIMEOUT = 15
     DEFAULT_RETRIES = 3
-    DEFAULT_PARALLEL = 3
+    DEFAULT_PARALLEL = 10
     # No default email - user must configure
 
     # File and content validation

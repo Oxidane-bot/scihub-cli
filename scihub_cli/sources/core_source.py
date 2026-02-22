@@ -258,7 +258,9 @@ class CORESource(PaperSource):
         source_urls = work.get("sourceFulltextUrls")
         if isinstance(source_urls, list):
             candidates.extend(
-                self._normalize_candidate_url(str(url)) for url in source_urls if isinstance(url, str)
+                self._normalize_candidate_url(str(url))
+                for url in source_urls
+                if isinstance(url, str)
             )
 
         download_url = work.get("downloadUrl")
@@ -277,7 +279,10 @@ class CORESource(PaperSource):
                     candidates.append(self._normalize_candidate_url(link_url))
 
         scored = sorted(
-            ((self._score_pdf_candidate(url), url) for url in self._dedupe_preserve_order(candidates)),
+            (
+                (self._score_pdf_candidate(url), url)
+                for url in self._dedupe_preserve_order(candidates)
+            ),
             key=lambda x: x[0],
             reverse=True,
         )

@@ -21,3 +21,29 @@ def test_content_parser_iframe_without_id():
     parser = ContentParser()
     url = parser.extract_download_url(html, "https://sci-hub.ren")
     assert url == "https://sci-hub.ren/downloads/10.1145/1390156.1390177.pdf?download=true"
+
+
+def test_content_parser_ranked_fallback_extracts_pdf_from_json_script():
+    html = """
+    <html><body>
+      <script type="application/json">
+        {"pdfUrl":"https:\\/\\/sci.bban.top\\/pdf/10.1080\\/14606925.2016.1130956.pdf"}
+      </script>
+    </body></html>
+    """
+    parser = ContentParser()
+    url = parser.extract_download_url(html, "https://sci-hub.vg")
+    assert url == "https://sci.bban.top/pdf/10.1080/14606925.2016.1130956.pdf?download=true"
+
+
+def test_content_parser_ranked_fallback_ignores_challenge_tokens():
+    html = """
+    <html><body>
+      <script>
+        var cF = {"cUPMDTk":"\\/cdn-cgi\\/challenge-platform\\/h\\/g\\/orchestrate\\/jsch\\/v1"};
+      </script>
+    </body></html>
+    """
+    parser = ContentParser()
+    url = parser.extract_download_url(html, "https://sci-hub.vg")
+    assert url is None
