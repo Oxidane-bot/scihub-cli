@@ -5,6 +5,7 @@ Main Sci-Hub client providing high-level interface with multi-source support.
 import os
 import re
 import time
+from dataclasses import replace
 from html import unescape
 from pathlib import Path
 from typing import Any, Optional
@@ -24,6 +25,7 @@ from .sources.arxiv_source import ArxivSource
 from .sources.core_source import CORESource
 from .sources.direct_pdf_source import DirectPDFSource
 from .sources.html_landing_source import HTMLLandingSource
+from .sources.openalex_source import OpenAlexSource
 from .sources.pmc_source import PMCSource
 from .sources.scihub_source import SciHubSource
 from .sources.unpaywall_source import UnpaywallSource
@@ -35,6 +37,76 @@ logger = get_logger(__name__)
 
 class SciHubClient:
     """Main client interface with multi-source support (Sci-Hub, Unpaywall, arXiv, CORE)."""
+
+    _ACADEMIC_HOST_HINTS = (
+        "journal",
+        "journals",
+        "research",
+        "scholar",
+        "library",
+        "archive",
+        "repository",
+        "university",
+        "institute",
+        "college",
+        "faculty",
+        "campus",
+        "preprint",
+        "arxiv",
+        "academic",
+    )
+    _ACADEMIC_ONLY_EXTRA_NON_ACADEMIC_HOST_MARKERS = (
+        "rebelliongroup.com",
+        "themodems.com",
+        "bruceturkel.com",
+        "onclusive.com",
+        "evdances.com",
+        "civicbrand.com",
+        "theguardian.com",
+        "english.stackexchange.com",
+        "getflamingo.com",
+        "s100.copyright.com",
+        "formpl.us",
+        "ichef.bbci.co.uk",
+        "media.jaguarlandrover.com",
+        "stockmarketwatch.com",
+        "dictionary.cambridge.org",
+        "scribd.com",
+        "linkedin.com",
+        "dokumen.pub",
+        "mckinsey.com",
+        "autoweek.com",
+        "cdn.shopify.com",
+        "hbr.org",
+        "slideshare.net",
+        "apnews.com",
+        "caranddriver.com",
+        "pinterest.com",
+        "nationwidevehiclecontracts.co.uk",
+        "sportsbusinessdaily.com",
+        "marketresearch.com",
+        "media.post.rvohealth.io",
+        "historyofluxury.com",
+        "whitehouse.gov",
+    )
+    _ACADEMIC_PATH_HINTS = (
+        "/doi/",
+        "/article",
+        "/articles/",
+        "/paper",
+        "/papers/",
+        "/manuscript",
+        "/preprint",
+        "/pdf",
+        "/abs/",
+        "/abstract",
+        "/fulltext",
+        "/bitstream/",
+        "/handle/",
+        "/record/",
+        "blobtype=pdf",
+        "download=true",
+    )
 
     def __init__(
         self,
@@ -60,6 +132,7 @@ class SciHubClient:
         enable_core: bool = False,
         fast_fail: bool = False,
         download_deadline_seconds: float | None = None,
+        academic_only: bool = False,
     ):
         """Initialize client with optional dependency injection."""
 
@@ -81,6 +154,7 @@ class SciHubClient:
         self.enable_core = enable_core
         self.fast_fail = fast_fail
         self.download_deadline_seconds = download_deadline_seconds
+        self.academic_only = academic_only
 
         # Dependency injection with defaults
         self.mirror_manager = mirror_manager or MirrorManager(mirrors, self.timeout)
@@ -117,9 +191,25 @@ class SciHubClient:
             # arXiv: Free and open, always enabled (high priority for preprints)
             sources.insert(0, ArxivSource(timeout=self.timeout))
 
+            # OpenAlex: OA metadata + PDF links, no email required
+            sources.insert(
+                0,
+                OpenAlexSource(
+                    timeout=self.timeout,
+                    email=self.email,
+                    api_key=settings.openalex_api_key,
+                    fast_fail=self.fast_fail,
+                ),
+            )
+
             # Only enable Unpaywall when email is provided
             if self.email:
-                sources.insert(0, UnpaywallSource(email=self.email, timeout=self.timeout))
+                sources.insert(
+                    0,
+                    UnpaywallSource(
+                        email=self.email, timeout=self.timeout, fast_fail=self.fast_fail
+                    ),
+                )
 
             # CORE does not require email, keep as OA fallback (unless explicitly disabled)
             if self.enable_core:
@@ -496,6 +586,30 @@ class SciHubClient:
         cleaned = unescape(candidate.strip())
         if not cleaned:
             return None
+
+        def _sanitize(url: str) -> str:
+            trimmed = re.split(r"\)\]\(https?://", url, maxsplit=1)[0]
+            trimmed = re.split(r"\]\(https?://", trimmed, maxsplit=1)[0]
+            return trimmed.rstrip(")}],;")
+
+        # Keep the most plausible URL token when inputs contain markdown/link concatenation.
+        urls = re.findall(r"https?://[^\s\"'<>]+", cleaned)
+        if urls:
+            cleaned = _sanitize(
+                next(
+                    (
+                        url
+                        for url in urls
+                        if ".pdf" in url.lower()
+                        or "/pdf" in url.lower()
+                        or "/download/" in url.lower()
+                        or "blobtype=pdf" in url.lower()
+                    ),
+                    urls[0],
+                )
+            )
+        else:
+            cleaned = _sanitize(cleaned)
         parsed = urlparse(cleaned)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return None
@@ -514,12 +628,11 @@ class SciHubClient:
 
         host = parsed.netloc.lower()
         source_name = (source or "").strip().lower()
-        if source_name != "pmc" and "pmc.ncbi.nlm.nih.gov" not in host:
-            return []
-        path_lower = (parsed.path or "").lower()
-        # Fast-fail trade-off: only route the canonical PMC PDF endpoint through Europe PMC.
-        # Named journal PDF files work less consistently and add noticeable latency.
-        if not path_lower.endswith("/pdf/main.pdf"):
+        if (
+            source_name != "pmc"
+            and "pmc.ncbi.nlm.nih.gov" not in host
+            and "ncbi.nlm.nih.gov" not in host
+        ):
             return []
 
         match = re.search(r"(PMC\d+)", primary_url, re.IGNORECASE)
@@ -609,28 +722,58 @@ class SciHubClient:
             return []
 
         # Filter out comments and empty lines
-        identifiers = [
+        raw_identifiers = [
             line.strip() for line in lines if line.strip() and not line.strip().startswith("#")
         ]
+        if self.academic_only:
+            total_before_filter = len(raw_identifiers)
+            raw_identifiers = [
+                identifier
+                for identifier in raw_identifiers
+                if self._is_probably_academic_identifier(identifier)
+            ]
+            dropped = total_before_filter - len(raw_identifiers)
+            logger.info(
+                "Academic-only filter enabled: kept %s/%s identifiers (dropped %s non-academic URLs)",
+                len(raw_identifiers),
+                total_before_filter,
+                dropped,
+            )
 
-        logger.info(f"Found {len(identifiers)} papers to download")
+        normalized_groups: dict[str, list[tuple[int, str, str]]] = {}
+        for index, identifier in enumerate(raw_identifiers):
+            normalized = self.doi_processor.normalize_doi(identifier)
+            normalized_groups.setdefault(normalized, []).append((index, identifier, normalized))
 
-        if parallel == 1 or len(identifiers) <= 1:
-            results = []
-            for i, identifier in enumerate(identifiers):
-                logger.info(f"Processing {i + 1}/{len(identifiers)}: {identifier}")
-                result = self.download_paper(identifier, progress_callback=progress_callback)
-                results.append(result)
+        tasks: list[tuple[str, str, list[tuple[int, str, str]]]] = []
+        for dedupe_key, entries in normalized_groups.items():
+            variants = [identifier for _, identifier, _normalized in entries]
+            representative = self._select_best_identifier_variant(variants)
+            tasks.append((dedupe_key, representative, entries))
+
+        logger.info(
+            "Found %s papers to download (%s unique after normalization)",
+            len(raw_identifiers),
+            len(tasks),
+        )
+
+        unique_results: list[Optional[DownloadResult]] = [None] * len(tasks)
+
+        if parallel == 1 or len(tasks) <= 1:
+            for i, (_normalized, identifier, _entries) in enumerate(tasks):
+                logger.info(f"Processing {i + 1}/{len(tasks)}: {identifier}")
+                unique_results[i] = self.download_paper(
+                    identifier, progress_callback=progress_callback
+                )
 
                 # Add a small delay between sequential downloads
-                if i < len(identifiers) - 1:
+                if i < len(tasks) - 1:
                     time.sleep(2)
         else:
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            results: list[Optional[DownloadResult]] = [None] * len(identifiers)
-            workers = min(parallel, len(identifiers))
-            logger.info(f"Downloading {len(identifiers)} papers with {workers} workers")
+            workers = min(parallel, len(tasks))
+            logger.info(f"Downloading {len(tasks)} unique papers with {workers} workers")
 
             def _download_one(index: int, identifier: str) -> tuple[int, DownloadResult]:
                 return index, self.download_paper(identifier, progress_callback=progress_callback)
@@ -638,15 +781,94 @@ class SciHubClient:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 future_to_index = {
                     executor.submit(_download_one, index, identifier): index
-                    for index, identifier in enumerate(identifiers)
+                    for index, (_normalized, identifier, _entries) in enumerate(tasks)
                 }
                 for future in as_completed(future_to_index):
                     index, result = future.result()
-                    results[index] = result
+                    unique_results[index] = result
 
-            results = [result for result in results if result is not None]
+        results: list[Optional[DownloadResult]] = [None] * len(raw_identifiers)
+        for task_index, (_dedupe_key, _representative, entries) in enumerate(tasks):
+            base_result = unique_results[task_index]
+            if base_result is None:
+                continue
+            for original_index, original_identifier, original_normalized in entries:
+                if base_result.identifier == original_identifier:
+                    results[original_index] = base_result
+                    continue
+                results[original_index] = replace(
+                    base_result,
+                    identifier=original_identifier,
+                    normalized_identifier=original_normalized,
+                )
+
+        results = [result for result in results if result is not None]
 
         successful = sum(1 for result in results if result.success)
-        logger.info(f"Downloaded {successful}/{len(identifiers)} papers")
+        logger.info(f"Downloaded {successful}/{len(raw_identifiers)} papers")
 
         return results
+
+    @staticmethod
+    def _is_probably_academic_identifier(identifier: str) -> bool:
+        token = (identifier or "").strip()
+        if not token:
+            return False
+        lowered = token.lower()
+
+        # DOI and arXiv identifiers should always be considered academic.
+        if lowered.startswith("10.") or lowered.startswith("arxiv:"):
+            return True
+
+        parsed = urlparse(token)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            # Keep unknown non-URL identifiers to avoid dropping valid academic tokens.
+            return True
+
+        host = parsed.netloc.lower()
+        if FileDownloader._is_obvious_non_academic_host(host):
+            return False
+        if host.startswith("www."):
+            host = host[4:]
+        if any(
+            marker in host for marker in SciHubClient._ACADEMIC_ONLY_EXTRA_NON_ACADEMIC_HOST_MARKERS
+        ):
+            return False
+
+        if host.endswith(".edu") or host.endswith(".gov") or ".ac." in host:
+            return True
+        if any(marker in host for marker in FileDownloader._ACADEMIC_HOST_MARKERS):
+            return True
+        if any(hint in host for hint in SciHubClient._ACADEMIC_HOST_HINTS):
+            return True
+
+        path_query = f"{(parsed.path or '').lower()}?{(parsed.query or '').lower()}"
+        if any(hint in path_query for hint in SciHubClient._ACADEMIC_PATH_HINTS):
+            return True
+        if re.search(r"10\\.[0-9]{4,9}/[-._;()/:a-z0-9]+", path_query, flags=re.I):
+            return True
+
+        # Keep unknown-but-not-obviously-non-academic hosts to avoid dropping
+        # legitimate institutional repositories with unusual domains.
+        return True
+
+    @staticmethod
+    def _select_best_identifier_variant(variants: list[str]) -> str:
+        """
+        Prefer cleaner identifier variants when multiple raw links normalize to the same key.
+        """
+
+        def _score(value: str) -> tuple[int, int]:
+            lowered = (value or "").lower()
+            penalty = 0
+            penalty += lowered.count("](") * 8
+            penalty += lowered.count(")](") * 8
+            penalty += lowered.count("{") * 4
+            penalty += lowered.count("}") * 4
+            penalty += lowered.count("[") * 3
+            penalty += lowered.count("]") * 3
+            penalty += lowered.count("?utm_") * 6
+            penalty += lowered.count("http://") + lowered.count("https://")
+            return penalty, len(value or "")
+
+        return min(variants, key=_score)

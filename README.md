@@ -1,16 +1,17 @@
 # Sci-Hub CLI
 
-A command-line tool for batch downloading academic papers with multi-source support (Sci-Hub, Unpaywall, arXiv, CORE).
+A command-line tool for batch downloading academic papers with multi-source support (OpenAlex, Sci-Hub, Unpaywall, arXiv, CORE).
 
 *Read this in other languages: [English](README.md), [简体中文](README.zh-CN.md)*
 
 ## Features
 
 - **Multi-Source Support**: Intelligently routes downloads across multiple sources
+  - **OpenAlex**: OA metadata + full-text link discovery (no email required)
   - **arXiv**: Prioritized for preprints (free, no API key needed)
   - **Unpaywall**: For open access papers (requires email)
   - **Sci-Hub**: Fallback for older papers (coverage-driven, slower)
-  - **CORE**: Additional OA fallback
+  - **CORE**: Additional OA fallback (disabled by default; opt in with `--enable-core`)
 - **Smart Year-Based Routing**:
   - Papers before 2021: OA sources first, Sci-Hub fallback
   - Papers 2021+: OA sources only (skip Sci-Hub)
@@ -33,6 +34,15 @@ A command-line tool for batch downloading academic papers with multi-source supp
 
 - Improved `--to-md` stability by serializing Markdown conversion internally, reducing random converter crashes under parallel downloads
 - Added release guidance for stale `uv tool` environments that may still run old converter code
+
+### v0.5.0
+
+- Enabled `--academic-only` filtering by default to exclude obvious non-academic links before download
+- Added high-signal URL normalization/deduplication for noisy inputs (tracking params/fragments/`www` variants)
+- Added OpenAlex source integration and improved OA-first routing behavior
+- Improved fail-fast behavior for challenge/paywall pages to reduce wasted retries
+- Added robust PMC fallback to EuropePMC render endpoints when primary PMC PDF URLs return HTML
+- Updated default parallelism to `16` for better speed/success balance on large batches
 
 ## Installation
 
@@ -197,7 +207,8 @@ The email is saved to `~/.scihub-cli/config.json` and sent only to Unpaywall for
 
 ```
 usage: scihub-cli [-h] [-o OUTPUT] [-m MIRROR] [-t TIMEOUT] [-r RETRIES] [-p PARALLEL]
-                  [--enable-core] [--fast-fail]
+                  [--enable-core] [--fast-fail] [--academic-only]
+                  [--no-academic-only]
                   [--email EMAIL] [-v] [--version] input_file
 
 Download academic papers from Sci-Hub and Unpaywall in batch mode.
@@ -216,7 +227,7 @@ options:
   -r RETRIES, --retries RETRIES
                         Number of retries for failed downloads (default: 3)
   -p PARALLEL, --parallel PARALLEL
-                        Number of parallel downloads (threads)
+                        Number of parallel downloads (threads) (default: 16)
   --to-md              Convert downloaded PDFs to Markdown
   --md-output MD_OUTPUT
                         Output directory for generated Markdown (default: <pdf_output>/md)
@@ -231,6 +242,8 @@ options:
                         Maximum characters per HTML snapshot file (default: 2000000)
   --enable-core         Enable CORE source lookups (disabled by default to avoid rate-limit slowdown)
   --fast-fail           Skip bypass and HTML recovery on permanent failures (faster, may reduce success rate)
+  --academic-only       Filter out obvious non-academic URLs before downloading (default)
+  --no-academic-only    Disable academic-only filtering and process all input URLs
   --email EMAIL         Email for Unpaywall API (saves to config file)
   -v, --verbose         Enable verbose logging
   --version             show program's version number and exit
@@ -264,8 +277,14 @@ scihub-cli --to-md --md-output research/markdown papers.txt
 # Enable failure diagnostics (source attempts + HTML snapshots in download-report.json)
 scihub-cli --to-md --md-warn-only --trace-html papers.txt
 
-# Fast-fail is enabled by default (and default parallelism is 10)
+# Fast-fail is enabled by default (and default parallelism is 16)
 scihub-cli -r 1 -t 8 papers.txt
+
+# Academic-only filtering is enabled by default
+scihub-cli papers.txt
+
+# Disable academic-only filtering (process all URLs)
+scihub-cli --no-academic-only papers.txt
 
 # Disable fast-fail when you want slower but more aggressive recovery
 scihub-cli --no-fast-fail papers.txt

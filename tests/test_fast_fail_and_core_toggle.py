@@ -32,6 +32,74 @@ class _ForbiddenSession:
         return _ForbiddenResponse()
 
 
+class _Challenge403Response:
+    status_code = 403
+    text = (
+        "<html><title>Just a moment...</title>"
+        "Enable JavaScript and cookies to continue"
+        "window._cf_chl_opt</html>"
+    )
+    headers = {"Content-Type": "text/html"}
+
+
+class _Challenge403Session:
+    def get(self, url: str, **kwargs):  # noqa: ARG002
+        return _Challenge403Response()
+
+
+class _Paywall403Response:
+    status_code = 403
+    text = "<html>Sign up or log in to continue reading. Get access.</html>"
+    headers = {"Content-Type": "text/html"}
+
+
+class _Paywall403Session:
+    def get(self, url: str, **kwargs):  # noqa: ARG002
+        return _Paywall403Response()
+
+
+class _AwsCaptcha403Response:
+    status_code = 403
+    text = (
+        "<html>captcha.awswaf.com CaptchaScript.renderCaptcha verify that you're not a robot</html>"
+    )
+    headers = {"Content-Type": "text/html"}
+
+
+class _AwsCaptcha403Session:
+    def get(self, url: str, **kwargs):  # noqa: ARG002
+        return _AwsCaptcha403Response()
+
+
+class _AkamaiAccessDenied403Response:
+    status_code = 403
+    text = (
+        "<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD><BODY>"
+        "You don't have permission to access this resource."
+        "<P>https://errors.edgesuite.net/18.1234</P></BODY></HTML>"
+    )
+    headers = {"Content-Type": "text/html"}
+
+
+class _AkamaiAccessDenied403Session:
+    def get(self, url: str, **kwargs):  # noqa: ARG002
+        return _AkamaiAccessDenied403Response()
+
+
+class _Pdfish403Response:
+    status_code = 403
+    text = ""
+    headers = {"Content-Type": "application/pdf"}
+
+    def close(self):
+        return None
+
+
+class _Pdfish403Session:
+    def get(self, url: str, **kwargs):  # noqa: ARG002
+        return _Pdfish403Response()
+
+
 class _SlowPdfResponse:
     def __init__(self, sleep_seconds: float = 0.03):
         self.status_code = 200
@@ -98,6 +166,7 @@ def test_disable_core_removes_core_source(tmp_path: Path):
         enable_core=False,
     )
     assert "CORE" not in client.source_manager.sources
+    assert "OpenAlex" in client.source_manager.sources
 
     client_with_core = SciHubClient(
         output_dir=str(tmp_path / "out-enabled"),
@@ -143,6 +212,64 @@ def test_fast_fail_skips_page_403_bypass():
     html, status = downloader.get_page_content("https://example.org/article")
     assert status == 403
     assert html == "Forbidden"
+
+
+def test_fast_fail_allowed_host_uses_single_curl_bypass_for_recoverable_challenge():
+    downloader = FileDownloader(session=_Challenge403Session(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
+    calls = {"curl": 0}
+
+    def _curl(url: str, timeout_seconds=None):  # noqa: ARG001
+        calls["curl"] += 1
+        return "<html>ok</html>", 200
+
+    def _unexpected(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("cloudscraper should not run in fast-fail targeted bypass")
+
+    downloader._get_page_with_curl_cffi = _curl  # type: ignore[method-assign]
+    downloader._get_page_with_cloudscraper = _unexpected  # type: ignore[method-assign]
+
+    html, status = downloader.get_page_content("https://journals.sagepub.com/home/vcj")
+    assert status == 200
+    assert html == "<html>ok</html>"
+    assert calls["curl"] == 1
+
+
+def test_fast_fail_allowed_host_paywall_skips_page_bypass():
+    downloader = FileDownloader(session=_Paywall403Session(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
+
+    def _unexpected(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("Bypass should not run for paywall/login 403 pages")
+
+    downloader._get_page_with_cloudscraper = _unexpected  # type: ignore[method-assign]
+    downloader._get_page_with_curl_cffi = _unexpected  # type: ignore[method-assign]
+
+    html, status = downloader.get_page_content("https://journals.sagepub.com/home/vcj")
+    assert status == 403
+    assert "continue reading" in html.lower()
+
+
+def test_fast_fail_allowed_host_hard_captcha_skips_page_bypass():
+    downloader = FileDownloader(session=_AwsCaptcha403Session(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
+
+    def _unexpected(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("Bypass should not run for hard captcha pages")
+
+    downloader._get_page_with_cloudscraper = _unexpected  # type: ignore[method-assign]
+    downloader._get_page_with_curl_cffi = _unexpected  # type: ignore[method-assign]
+
+    html, status = downloader.get_page_content("https://doi.org/10.1016/j.rser.2021.111658")
+    assert status == 403
+    assert "captcha.awswaf.com" in html.lower()
+
+
+def test_probe_pdf_url_rejects_403_challenge_html():
+    downloader = FileDownloader(session=_Challenge403Session(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
+    assert not downloader.probe_pdf_url("https://journals.sagepub.com/content/abc.pdf")
+
+
+def test_probe_pdf_url_keeps_403_non_html_as_potential_pdf():
+    downloader = FileDownloader(session=_Pdfish403Session(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
+    assert downloader.probe_pdf_url("https://example.org/protected.pdf")
 
 
 def test_download_deadline_interrupts_slow_stream(tmp_path: Path):
@@ -271,7 +398,7 @@ def test_fast_fail_mdpi_lightweight_bypass_retries_on_timeout(tmp_path: Path):
     assert calls["n"] == 2
 
 
-def test_fast_fail_mdpi_lightweight_bypass_does_not_retry_on_403(tmp_path: Path):
+def test_fast_fail_mdpi_lightweight_bypass_retries_on_403(tmp_path: Path):
     downloader = FileDownloader(session=_TimeoutSession(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
     calls = {"n": 0}
 
@@ -284,6 +411,28 @@ def test_fast_fail_mdpi_lightweight_bypass_does_not_retry_on_403(tmp_path: Path)
     output = tmp_path / "mdpi-retry-403.pdf"
     success, error = downloader.download_file(
         "https://www.mdpi.com/1996-1073/16/1/519/pdf", str(output)
+    )
+
+    assert not success
+    assert error == "Download timeout"
+    assert calls["n"] == 2
+    assert not output.exists()
+
+
+def test_fast_fail_non_whitelisted_lightweight_bypass_does_not_retry_on_403(tmp_path: Path):
+    downloader = FileDownloader(session=_TimeoutSession(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
+    calls = {"n": 0}
+
+    def _curl_403(url: str, output_path: str, progress_callback=None):  # noqa: ARG001
+        calls["n"] += 1
+        return False, "HTTP 403"
+
+    downloader._download_with_curl_cffi = _curl_403  # type: ignore[method-assign]
+
+    output = tmp_path / "sage-retry-403.pdf"
+    success, error = downloader.download_file(
+        "https://methods.sagepub.com/book/mono/example/download.pdf",
+        str(output),
     )
 
     assert not success
@@ -353,3 +502,62 @@ def test_fast_fail_non_mdpi_html_does_not_use_lightweight_bypass(tmp_path: Path)
     assert "Server returned HTML instead of PDF" in error
     assert calls["n"] == 0
     assert not output.exists()
+
+
+def test_fast_fail_non_mdpi_akamai_403_skips_lightweight_bypass(tmp_path: Path):
+    downloader = FileDownloader(session=_AkamaiAccessDenied403Session(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
+    calls = {"n": 0}
+
+    def _curl_count(url: str, output_path: str, progress_callback=None):  # noqa: ARG001
+        calls["n"] += 1
+        return False, "HTTP 403"
+
+    downloader._download_with_curl_cffi = _curl_count  # type: ignore[method-assign]
+
+    output = tmp_path / "mdpi-akamai.pdf"
+    success, error = downloader.download_file(
+        "https://journals.sagepub.com/content/abc.pdf",
+        str(output),
+    )
+
+    assert not success
+    assert error == "Access denied (403)"
+    assert calls["n"] == 0
+
+
+def test_fast_fail_mdpi_akamai_403_skips_lightweight_bypass(tmp_path: Path):
+    downloader = FileDownloader(session=_AkamaiAccessDenied403Session(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
+    calls = {"n": 0}
+
+    def _curl_count(url: str, output_path: str, progress_callback=None):  # noqa: ARG001
+        calls["n"] += 1
+        return False, "HTTP 403"
+
+    downloader._download_with_curl_cffi = _curl_count  # type: ignore[method-assign]
+
+    output = tmp_path / "mdpi-akamai.pdf"
+    success, error = downloader.download_file(
+        "https://www.mdpi.com/1996-1073/12/15/2930/pdf",
+        str(output),
+    )
+
+    assert not success
+    assert error == "Access denied (403)"
+    assert calls["n"] == 0
+
+
+def test_force_page_bypass_skips_for_akamai_access_denied_html():
+    downloader = FileDownloader(session=_AkamaiAccessDenied403Session(), timeout=5, fast_fail=True)  # type: ignore[arg-type]
+
+    def _unexpected(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("Bypass should not run for Akamai access-denied pages")
+
+    downloader._get_page_with_cloudscraper = _unexpected  # type: ignore[method-assign]
+    downloader._get_page_with_curl_cffi = _unexpected  # type: ignore[method-assign]
+
+    html, status = downloader.get_page_content(
+        "https://www.mdpi.com/1996-1073/12/15/2930",
+        force_challenge_bypass=True,
+    )
+    assert status == 403
+    assert "access denied" in (html or "").lower()

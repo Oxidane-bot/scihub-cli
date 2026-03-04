@@ -92,6 +92,14 @@ class UserConfig:
         """Set CORE API key in config file."""
         self.set("core_api_key", api_key)
 
+    def get_openalex_api_key(self) -> Optional[str]:
+        """Get OpenAlex API key from config file."""
+        return self.get("openalex_api_key")
+
+    def set_openalex_api_key(self, api_key: str):
+        """Set OpenAlex API key in config file."""
+        self.set("openalex_api_key", api_key)
+
     def exists(self) -> bool:
         """Check if config file exists."""
         return self.config_file.exists()

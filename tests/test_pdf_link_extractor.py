@@ -5,7 +5,7 @@ from scihub_cli.core.pdf_link_extractor import (
 )
 
 
-def test_extract_cloudflare_challenge_token_candidate():
+def test_extract_cloudflare_challenge_token_candidate_is_filtered_out():
     base_url = "https://files01.core.ac.uk/download/286364337.pdf"
     html = (
         "<html><script>"
@@ -15,7 +15,7 @@ def test_extract_cloudflare_challenge_token_candidate():
 
     candidates = extract_pdf_candidates(html, base_url, min_score=1)
 
-    assert "https://files01.core.ac.uk/download/286364337.pdf?__cf_chl_tk=abc" in candidates
+    assert "https://files01.core.ac.uk/download/286364337.pdf?__cf_chl_tk=abc" not in candidates
 
 
 def test_extract_drupal_settings_pdf_candidate():
@@ -127,3 +127,92 @@ def test_derive_publisher_candidates_without_html():
         "https://www.nature.com/articles/s41598-024-75283-7"
     )
     assert "https://www.nature.com/articles/s41598-024-75283-7.pdf" in candidates
+
+
+def test_mdpi_suspicious_path_does_not_generate_prefetch_pdf_candidate():
+    candidates = derive_publisher_pdf_candidates("https://www.mdpi.com/about/journals/proposal)[x")
+    assert "https://www.mdpi.com/about/journals/proposal)[x/pdf" not in candidates
+
+
+def test_mdpi_redirect_new_site_generates_canonical_pdf_candidate():
+    candidates = derive_publisher_pdf_candidates(
+        "https://www.mdpi.com/redirect/new_site?return=/2227-9717/11/7/1982"
+    )
+    assert "https://www.mdpi.com/2227-9717/11/7/1982/pdf" in candidates
+
+
+def test_mdpi_non_article_paths_do_not_generate_pdf_candidate():
+    candidates = derive_publisher_pdf_candidates("https://www.mdpi.com/journal/energies")
+    assert not any(url.startswith("https://www.mdpi.com/journal/energies") for url in candidates)
+
+
+def test_derive_adsabs_pub_html_candidate():
+    candidates = derive_publisher_pdf_candidates(
+        "https://ui.adsabs.harvard.edu/abs/2017AIPC.1850p0024R/abstract"
+    )
+    assert "https://ui.adsabs.harvard.edu/link_gateway/2017AIPC.1850p0024R/PUB_HTML" in candidates
+
+
+def test_extracted_candidate_trims_trailing_junk():
+    base_url = "https://example.org/article"
+    html = """
+    <html><body>
+      <a href="/download/paper.pdf}}">Download PDF</a>
+    </body></html>
+    """
+    candidates = extract_pdf_candidates(html, base_url, min_score=1)
+    assert "https://example.org/download/paper.pdf" in candidates
+
+
+def test_auth_or_paywall_urls_are_filtered_out():
+    base_url = "https://example.org/article"
+    html = """
+    <html><body>
+      <a href="/login?next=/paper.pdf">Login</a>
+      <a href="/purchase?item=paper.pdf">Purchase</a>
+      <a href="/download/paper.pdf">Download PDF</a>
+    </body></html>
+    """
+    candidates = extract_pdf_candidates(html, base_url, min_score=1)
+    assert "https://example.org/login?next=/paper.pdf" not in candidates
+    assert "https://example.org/purchase?item=paper.pdf" not in candidates
+    assert "https://example.org/download/paper.pdf" in candidates
+
+
+def test_pdf_tail_path_without_pdf_extension_is_ranked():
+    base_url = "https://www.frontiersin.org/articles/10.3389/fenrg.2021.627864/full"
+    html = """
+    <html><body>
+      <script>
+        window.__ARTICLE__ = {"pdfUrl":"https://www.frontiersin.org/articles/10.3389/fenrg.2021.627864/pdf"};
+      </script>
+    </body></html>
+    """
+    ranked = extract_ranked_pdf_candidates(html, base_url)
+    urls = [url for _, url in ranked]
+    assert "https://www.frontiersin.org/articles/10.3389/fenrg.2021.627864/pdf" in urls
+
+
+def test_tracker_iframe_candidate_is_filtered_even_with_embed_bonus():
+    base_url = "https://example.org/article"
+    html = """
+    <html><body>
+      <iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NT2453N"></iframe>
+      <iframe src="https://cdn.example.org/content/paper.pdf"></iframe>
+    </body></html>
+    """
+    ranked = extract_ranked_pdf_candidates(html, base_url)
+    urls = [url for _, url in ranked]
+    assert "https://www.googletagmanager.com/ns.html?id=GTM-NT2453N" not in urls
+    assert "https://cdn.example.org/content/paper.pdf" in urls
+
+
+def test_inline_concatenated_markdown_url_keeps_pdf_url():
+    base_url = "https://example.org/article"
+    html = """
+    <html><body>
+      <a href="https://cdn.example.org/paper.pdf)](https://www.mdpi.com/books)">Download</a>
+    </body></html>
+    """
+    candidates = extract_pdf_candidates(html, base_url, min_score=1)
+    assert "https://cdn.example.org/paper.pdf" in candidates

@@ -1,16 +1,17 @@
 # Sci-Hub CLI
 
-支持多数据源的学术论文批量下载工具 (Sci-Hub、Unpaywall、arXiv、CORE)
+支持多数据源的学术论文批量下载工具 (OpenAlex、Sci-Hub、Unpaywall、arXiv、CORE)
 
 *其他语言版本: [English](README.md), [简体中文](README.zh-CN.md)*
 
 ## 功能特点
 
 - **多数据源支持**: 智能路由多个下载源
+  - **OpenAlex**: 开放获取元数据与全文链接发现（无需邮箱）
   - **arXiv**: 预印本优先 (免费,无需 API key)
   - **Unpaywall**: 开放获取论文 (需要邮箱)
   - **Sci-Hub**: 历史论文备选源 (覆盖率高但更慢)
-  - **CORE**: 额外的开放获取备选
+  - **CORE**: 额外的开放获取备选（默认关闭，可用 `--enable-core` 开启）
 - **智能年份路由**:
   - 2021年前论文: 先 OA 源，Sci-Hub 兜底
   - 2021年后论文: 仅 OA 源 (跳过 Sci-Hub)
@@ -33,6 +34,15 @@
 
 - 提升 `--to-md` 稳定性：Markdown 转换在内部串行执行，降低并行下载下随机转换崩溃的概率
 - 增加旧版 `uv tool` 环境的升级说明，避免工具缓存导致仍运行旧转换逻辑
+
+### v0.5.0
+
+- `--academic-only` 改为默认开启：下载前过滤明显非学术链接
+- 增强 URL 规范化与去重：自动清理追踪参数、fragment、`www` 变体等噪声
+- 集成 OpenAlex 来源并优化 OA 优先路由
+- 优化 fast-fail：对挑战页/付费墙页更快失败，减少无效重试
+- 增强 PMC 回退：当 PMC PDF 链接返回 HTML 时，自动尝试 EuropePMC 渲染端点
+- 默认并发提升为 `16`，在大批量下载下取得更好的速度/成功率平衡
 
 ## 安装方法
 
@@ -174,7 +184,8 @@ scihub-cli papers.txt --email your-email@university.edu
 
 ```
 用法: scihub-cli [-h] [-o OUTPUT] [-m MIRROR] [-t TIMEOUT] [-r RETRIES] [-p PARALLEL]
-                 [--enable-core] [--fast-fail]
+                 [--enable-core] [--fast-fail] [--academic-only]
+                 [--no-academic-only]
                  [--email EMAIL] [-v] [--version] 输入文件
 
 批量下载学术论文（Sci-Hub、Unpaywall、arXiv、CORE）。
@@ -193,7 +204,7 @@ scihub-cli papers.txt --email your-email@university.edu
  -r RETRIES, --retries RETRIES
                         下载失败时的重试次数（默认: 3）
   -p PARALLEL, --parallel PARALLEL
-                        并行下载线程数
+                        并行下载线程数（默认: 16）
   --to-md              下载后将 PDF 转为 Markdown
   --md-output MD_OUTPUT
                         Markdown 输出目录（默认: <pdf_output>/md）
@@ -208,6 +219,8 @@ scihub-cli papers.txt --email your-email@university.edu
                         每个 HTML 快照的最大字符数（默认: 2000000）
   --enable-core         启用 CORE 来源查询（默认关闭，避免限流导致变慢）
   --fast-fail           永久失败时跳过 bypass 和 HTML 恢复（更快，但可能降低成功率）
+  --academic-only       下载前过滤明显非学术 URL（默认开启）
+  --no-academic-only    关闭学术过滤，处理所有输入 URL
   --email EMAIL         Unpaywall API 邮箱（会保存到配置文件）
   -v, --verbose         启用详细日志
   --version             显示程序版本号并退出
@@ -229,8 +242,14 @@ scihub-cli --to-md --md-output research/markdown papers.txt
 # 开启失败诊断（download-report.json 中包含 source attempts 和 HTML 快照）
 scihub-cli --to-md --md-warn-only --trace-html papers.txt
 
-# 默认已启用 fast-fail（默认并发为 10）
+# 默认已启用 fast-fail（默认并发为 16）
 scihub-cli -r 1 -t 8 papers.txt
+
+# 默认已开启学术过滤（只处理学术输入）
+scihub-cli papers.txt
+
+# 关闭学术过滤（处理所有 URL）
+scihub-cli --no-academic-only papers.txt
 
 # 若希望更激进的恢复策略，可关闭 fast-fail
 scihub-cli --no-fast-fail papers.txt

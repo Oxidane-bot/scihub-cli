@@ -6,7 +6,7 @@ from scihub_cli.client import SciHubClient
 from scihub_cli.converters.pdf_to_md import MarkdownConvertOptions
 from scihub_cli.core.downloader import FileDownloader
 from scihub_cli.core.source_manager import SourceManager
-from scihub_cli.models import DownloadProgress
+from scihub_cli.models import DownloadProgress, DownloadResult
 from scihub_cli.sources.base import PaperSource
 from scihub_cli.sources.direct_pdf_source import DirectPDFSource
 
@@ -185,6 +185,82 @@ def test_parallel_download_from_file(tmp_path: Path):
     assert all(result.file_path and Path(result.file_path).exists() for result in results)
 
 
+def test_download_from_file_academic_only_filters_non_academic_urls(tmp_path: Path):
+    identifiers = [
+        "https://tiktok.com/discover/jaguar-brand-manager",
+        "https://news.sky.com/story/jaguar-boss-says-we-want-to-be-bold-and-disruptive-13265700",
+        "10.1016/j.rser.2021.111658",
+        "https://minds.wisconsin.edu/handle/1793/7889",
+    ]
+    input_file = tmp_path / "input-academic-only.txt"
+    input_file.write_text("\n".join(identifiers), encoding="utf-8")
+
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        source_manager=SourceManager(sources=[DirectPDFSource()], enable_year_routing=False),
+        academic_only=True,
+    )
+    calls: list[str] = []
+
+    def _fake_download(identifier: str, progress_callback=None):  # noqa: ARG001
+        calls.append(identifier)
+        return DownloadResult(
+            identifier=identifier,
+            normalized_identifier=identifier,
+            success=False,
+            error="stub",
+        )
+
+    client.download_paper = _fake_download  # type: ignore[method-assign]
+    results = client.download_from_file(str(input_file), parallel=1)
+
+    assert calls == [
+        "10.1016/j.rser.2021.111658",
+        "https://minds.wisconsin.edu/handle/1793/7889",
+    ]
+    assert [result.identifier for result in results] == calls
+
+
+def test_academic_only_filter_drops_unknown_commercial_urls(tmp_path: Path):
+    identifiers = [
+        "https://bruceturkel.com/branding-and-digital-marketing",
+        "https://themodems.com/jaguar-rebrand-case-study",
+        "https://autoweek.com/news/industry-news/a1234567/jaguar-rebrand",
+        "https://doi.org/10.1016/j.rser.2021.111658",
+        "https://journal.example.net/article/1234",
+    ]
+    input_file = tmp_path / "input-academic-strict.txt"
+    input_file.write_text("\n".join(identifiers), encoding="utf-8")
+
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        source_manager=SourceManager(sources=[DirectPDFSource()], enable_year_routing=False),
+        academic_only=True,
+    )
+    calls: list[str] = []
+
+    def _fake_download(identifier: str, progress_callback=None):  # noqa: ARG001
+        calls.append(identifier)
+        return DownloadResult(
+            identifier=identifier,
+            normalized_identifier=identifier,
+            success=False,
+            error="stub",
+        )
+
+    client.download_paper = _fake_download  # type: ignore[method-assign]
+    client.download_from_file(str(input_file), parallel=1)
+
+    assert calls == [
+        "https://doi.org/10.1016/j.rser.2021.111658",
+        "https://journal.example.net/article/1234",
+    ]
+
+
 def test_pdf_to_markdown_postprocess(tmp_path: Path):
     pdf_url = "https://example.org/paper.pdf"
     session = _FakeSession({pdf_url: _make_fake_pdf_bytes()})
@@ -337,8 +413,10 @@ def test_pmc_download_falls_back_to_europepmc_when_primary_returns_html(tmp_path
     assert result.file_path and Path(result.file_path).exists()
 
 
-def test_collect_download_candidates_skips_europepmc_for_named_pmc_pdf(tmp_path: Path):
+def test_collect_download_candidates_adds_europepmc_for_named_pmc_pdf(tmp_path: Path):
     primary_url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC7654321/pdf/entropy-25-00882.pdf"
+    backend_url = "https://europepmc.org/backend/ptpmcrender.fcgi?accid=PMC7654321&blobtype=pdf"
+    fallback_url = "https://europepmc.org/articles/PMC7654321?pdf=render"
     client = SciHubClient(
         output_dir=str(tmp_path / "out"),
         timeout=5,
@@ -352,4 +430,24 @@ def test_collect_download_candidates_skips_europepmc_for_named_pmc_pdf(tmp_path:
         metadata=None,
     )
 
-    assert candidates == [primary_url]
+    assert candidates == [primary_url, backend_url, fallback_url]
+
+
+def test_collect_download_candidates_normalizes_markdown_concatenated_urls(tmp_path: Path):
+    primary_url = "https://example.org/article"
+    polluted = "https://cdn.example.org/paper.pdf)](https://www.mdpi.com/books)"
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        source_manager=SourceManager(sources=[DirectPDFSource()], enable_year_routing=False),
+    )
+
+    candidates = client._collect_download_candidates(
+        primary_url=primary_url,
+        source="CORE",
+        metadata={"pdf_url": polluted},
+    )
+
+    assert "https://cdn.example.org/paper.pdf" in candidates
+    assert all(")](" not in url for url in candidates)

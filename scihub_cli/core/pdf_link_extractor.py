@@ -12,7 +12,7 @@ import json
 import re
 from html import unescape
 from typing import Any
-from urllib.parse import urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
@@ -80,6 +80,31 @@ _SCIENCEDIRECT_PII_PATH = re.compile(
 _SCIENCEDIRECT_PII_TOKEN = re.compile(r"""["']pii["']\s*:\s*["']([A-Z0-9]+)["']""", re.I)
 _TANDFONLINE_DOI_PATH = re.compile(r"/doi/(?:abs|full)/(.+)", re.I)
 _NATURE_ARTICLE_PATH = re.compile(r"/articles/([^/?#]+)", re.I)
+_ADSABS_ABS_PATH = re.compile(r"/abs/([^/?#]+)", re.I)
+_ADSABS_DOI_GATEWAY = re.compile(r"/link_gateway/[^\"'<>\\s]+/doi:([^\s\"'<>]+)", re.I)
+_TRAILING_JUNK = re.compile(r"(?i)(?:(?:%7d|%5d|[}\],;])+)$")
+_INLINE_HTTP_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.I)
+_MDPI_ARTICLE_PATH = re.compile(r"^/\d{4}-\d{4}/\d+/\d+/\d+$")
+_NEGATIVE_GATE_TOKENS = (
+    "/login",
+    "/signin",
+    "/account",
+    "/subscribe",
+    "/purchase",
+    "/cart",
+    "openathens",
+    "shibboleth",
+    "cf-turnstile",
+    "hcaptcha",
+    "g-recaptcha",
+    "captcha",
+    "recaptcha/api.js",
+    "captcha.awswaf.com",
+    "captchascript.rendercaptcha",
+    "__cf_chl",
+    "cf_chl",
+    "/cdn-cgi/challenge-platform/",
+)
 
 
 def extract_ranked_pdf_candidates(html: str, base_url: str) -> list[tuple[int, str]]:
@@ -102,8 +127,13 @@ def extract_ranked_pdf_candidates(html: str, base_url: str) -> list[tuple[int, s
         nonlocal order_counter
         if score <= 0:
             return
+        if _is_challenge_or_gate_url(url):
+            return
         cleaned = _normalize_candidate(base_url, url)
         if not cleaned:
+            return
+        normalized_host = urlparse(cleaned).netloc.lower()
+        if any(marker in normalized_host for marker in _TRACKER_HOST_MARKERS):
             return
         if cleaned not in order:
             order[cleaned] = order_counter
@@ -216,6 +246,10 @@ def _score_url(url: str) -> int:
     if any(marker in host for marker in _TRACKER_HOST_MARKERS):
         return 0
     path_lower = parsed.path.lower()
+    if any(token in url_lower for token in _NEGATIVE_GATE_TOKENS):
+        return 0
+    if "/auth/" in path_lower:
+        return 0
     if any(path_lower.endswith(ext) for ext in _NON_PDF_ASSET_EXTENSIONS):
         return 0
 
@@ -224,6 +258,8 @@ def _score_url(url: str) -> int:
         score += 900
     if ".pdf?" in url_lower or ".pdf&" in url_lower:
         score += 850
+    if path_lower.endswith("/pdf"):
+        score += 620
     if "/pdf/" in url_lower or "/pdf?" in url_lower:
         score += 650
     if "pdf=render" in url_lower:
@@ -238,8 +274,6 @@ def _score_url(url: str) -> int:
         score += 500
     if "files.eric.ed.gov/fulltext" in url_lower:
         score += 500
-    if "__cf_chl" in url_lower:
-        score += 100
     if "sciencedirect.com/science/article/pii/" in url_lower and "/pdfft" in url_lower:
         score += 850
     if "nature.com/articles/" in url_lower and ".pdf" in url_lower:
@@ -255,7 +289,8 @@ def _score_url(url: str) -> int:
 
 
 def _normalize_candidate(base_url: str, candidate: str) -> str | None:
-    token = _decode_escaped_token(candidate).strip()
+    token = _clean_trailing_junk(_decode_escaped_token(candidate).strip())
+    token = _extract_primary_inline_url(token) or token
     if not token:
         return None
 
@@ -263,7 +298,42 @@ def _normalize_candidate(base_url: str, candidate: str) -> str | None:
     parsed = urlparse(unescape(absolute.strip()))
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
-    return urlunparse(parsed._replace(fragment=""))
+    cleaned_path = _clean_trailing_junk(parsed.path or "")
+    cleaned_query = _clean_trailing_junk(parsed.query or "")
+    return urlunparse(parsed._replace(path=cleaned_path, query=cleaned_query, fragment=""))
+
+
+def _clean_trailing_junk(value: str) -> str:
+    if not value:
+        return value
+    cleaned = value
+    while True:
+        updated = _TRAILING_JUNK.sub("", cleaned)
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
+
+
+def _extract_primary_inline_url(value: str) -> str | None:
+    """
+    Recover the most likely URL from markdown/concatenated fragments.
+    """
+    if not value:
+        return None
+    matches = _INLINE_HTTP_URL_PATTERN.findall(value)
+    if not matches:
+        return None
+    # Prefer URL-like matches that are likely PDF/download endpoints.
+    for match in matches:
+        if _score_url(match) > 0:
+            return _clean_trailing_junk(match)
+    return _clean_trailing_junk(matches[0])
+
+
+def _is_challenge_or_gate_url(url: str) -> bool:
+    lowered = (url or "").lower()
+    return any(token in lowered for token in _NEGATIVE_GATE_TOKENS)
 
 
 def _decode_escaped_token(token: str) -> str:
@@ -326,9 +396,9 @@ def _extract_publisher_candidates(base_url: str, html_unescaped: str = "") -> li
 
     # MDPI article pages.
     if "mdpi.com" in host:
-        cleaned_path = path.rstrip("/")
-        if cleaned_path and not cleaned_path.lower().endswith("/pdf"):
-            out.append((f"https://www.mdpi.com{cleaned_path}/pdf", 980))
+        normalized_path = _normalize_mdpi_article_path(parsed.path, parsed.query)
+        if normalized_path:
+            out.append((f"https://www.mdpi.com{normalized_path}/pdf", 980))
 
     # arXiv HTML landing pages.
     if "arxiv.org" in host:
@@ -337,7 +407,60 @@ def _extract_publisher_candidates(base_url: str, html_unescaped: str = "") -> li
             arxiv_id = m.group(1)
             out.append((f"https://arxiv.org/pdf/{arxiv_id}.pdf", 1100))
 
+    # ADS article pages.
+    if "ui.adsabs.harvard.edu" in host:
+        m = _ADSABS_ABS_PATH.search(path)
+        if m:
+            bibcode = m.group(1).strip("/")
+            if bibcode:
+                out.append((f"https://ui.adsabs.harvard.edu/link_gateway/{bibcode}/PUB_HTML", 780))
+        for raw_doi in _ADSABS_DOI_GATEWAY.findall(html_unescaped):
+            doi = raw_doi.strip().strip("/")
+            doi = _clean_trailing_junk(doi)
+            if doi.startswith("10."):
+                out.append((f"https://doi.org/{doi}", 820))
+
     return out
+
+
+def _normalize_mdpi_article_path(path: str, query: str) -> str | None:
+    raw_path = (path or "").strip()
+    query_params = parse_qs(query or "")
+
+    if raw_path.rstrip("/") == "/redirect/new_site":
+        return_values = query_params.get("return") or []
+        if not return_values:
+            return None
+        raw_path = (return_values[0] or "").strip()
+
+    raw_path = raw_path.rstrip("/")
+    raw_path = re.sub(r"/(?:html?|htm)$", "", raw_path, flags=re.I)
+    if not raw_path.startswith("/"):
+        return None
+
+    lowered = raw_path.lower()
+    if any(token in lowered for token in ("[", "]", "(", ")", "{", "}", ")](", "](")):
+        return None
+    if any(
+        lowered.startswith(prefix)
+        for prefix in (
+            "/about",
+            "/topics",
+            "/authors",
+            "/editors",
+            "/reviewers",
+            "/journal",
+            "/special_issues",
+            "/books",
+            "/user",
+        )
+    ):
+        return None
+    if lowered.endswith("/pdf"):
+        return None
+    if not _MDPI_ARTICLE_PATH.fullmatch(raw_path):
+        return None
+    return raw_path
 
 
 def _extract_dspace_candidates(soup: BeautifulSoup) -> list[str]:

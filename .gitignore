@@ -51,6 +51,7 @@ docs/e2e_out/
 # 测试文件和用户数据
 dois.txt
 history-links-unique.txt
+retrieved_links_all_*.txt
 test*.txt
 test*/
 *_test/

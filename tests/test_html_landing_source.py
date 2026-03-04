@@ -57,8 +57,8 @@ class _FailIfFetchedDownloader:
 
 
 class _ProbeAwareDownloader(_StubDownloader):
-    def __init__(self, html: str, probe_ok: set[str]):
-        super().__init__(html=html, status=200)
+    def __init__(self, html: str, probe_ok: set[str], status: int = 200):
+        super().__init__(html=html, status=status)
         self._probe_ok = probe_ok
 
     def probe_pdf_url(self, url: str) -> bool:
@@ -124,6 +124,35 @@ class _FastFailRejectUnprobedDownloader:
 
     def probe_pdf_url(self, url: str) -> bool:  # noqa: ARG002
         return False
+
+
+class _ReaderFallbackDownloader:
+    fast_fail = True
+
+    def __init__(
+        self,
+        *,
+        base_html: str,
+        base_status: int,
+        reader_html: str | None,
+        reader_status: int | None = 200,
+        probe_ok: set[str] | None = None,
+    ):
+        self.base_html = base_html
+        self.base_status = base_status
+        self.reader_html = reader_html
+        self.reader_status = reader_status
+        self.probe_ok = probe_ok or set()
+        self.reader_calls = 0
+
+    def get_page_content(self, url: str, **kwargs):  # noqa: ARG002
+        if url.startswith("https://r.jina.ai/"):
+            self.reader_calls += 1
+            return self.reader_html, self.reader_status
+        return self.base_html, self.base_status
+
+    def probe_pdf_url(self, url: str) -> bool:
+        return url in self.probe_ok
 
 
 def test_html_landing_extracts_citation_pdf_meta():
@@ -237,6 +266,33 @@ def test_html_landing_fast_fail_skips_unknown_news_host():
     assert source.get_pdf_url("https://thetrailblazer.co.uk/news/jaguar-rebrand") is None
 
 
+def test_html_landing_fast_fail_keeps_ideas_repec_host():
+    source = HTMLLandingSource(downloader=_FastFailNoFetchDownloader())  # type: ignore[arg-type]
+    assert source.can_handle("https://ideas.repec.org/p/eee/energy/v169y2019icp1131-1142.html")
+
+
+def test_html_landing_fast_fail_keeps_doi_host():
+    source = HTMLLandingSource(downloader=_FastFailNoFetchDownloader())  # type: ignore[arg-type]
+    assert source.can_handle("https://doi.org/10.1016/j.rser.2021.111658")
+
+
+def test_html_landing_fast_fail_skips_scholar_non_paper_path():
+    source = HTMLLandingSource(downloader=_FastFailNoFetchDownloader())  # type: ignore[arg-type]
+    assert (
+        source.get_pdf_url("https://scholar.google.com/scholar?cluster=1529343759923094886") is None
+    )
+
+
+def test_html_landing_fast_fail_skips_ieeexplore_conference_index_path():
+    source = HTMLLandingSource(downloader=_FastFailNoFetchDownloader())  # type: ignore[arg-type]
+    assert source.get_pdf_url("https://ieeexplore.ieee.org/xpl/conhome/10761120/proceeding") is None
+
+
+def test_html_landing_fast_fail_skips_ieeexplore_metrics_path():
+    source = HTMLLandingSource(downloader=_FastFailNoFetchDownloader())  # type: ignore[arg-type]
+    assert source.get_pdf_url("https://ieeexplore.ieee.org/document/10762701/metrics") is None
+
+
 def test_html_landing_prefers_derived_publisher_candidate_without_fetch():
     base_url = "https://www.nature.com/articles/s41598-024-75283-7"
     derived = "https://www.nature.com/articles/s41598-024-75283-7.pdf"
@@ -264,12 +320,50 @@ def test_html_landing_fast_fail_skips_sciencedirect_before_prefetch_probe():
     )
 
 
+def test_html_landing_fast_fail_skips_sk_sagepub_before_prefetch_probe():
+    source = HTMLLandingSource(downloader=_FastFailNoProbeNoFetchDownloader())  # type: ignore[arg-type]
+    assert (
+        source.get_pdf_url(
+            "https://sk.sagepub.com/book/rethinking-marketing/chpt/research-marketing"
+        )
+        is None
+    )
+
+
 def test_html_landing_fast_fail_forces_page_bypass_for_mdpi():
     downloader = _FastFailMdpiForceBypassDownloader()
     source = HTMLLandingSource(downloader=downloader)  # type: ignore[arg-type]
 
     assert source.get_pdf_url("https://www.mdpi.com/") is None
     assert downloader.force_bypass_calls == 1
+
+
+def test_html_landing_normalizes_mdpi_redirect_new_site_return_path():
+    source = HTMLLandingSource(
+        downloader=_FastFailDerivedCandidateDownloader(
+            probe_ok={"https://www.mdpi.com/2227-9717/11/7/1982/pdf"}
+        )
+    )  # type: ignore[arg-type]
+
+    assert (
+        source.get_pdf_url("https://www.mdpi.com/redirect/new_site?return=/2227-9717/11/7/1982")
+        == "https://www.mdpi.com/2227-9717/11/7/1982/pdf"
+    )
+
+
+def test_html_landing_filters_mdpi_unhelpful_login_candidate():
+    html = """
+    <html><body>
+      <a href="https://www.mdpi.com/user/manuscripts/upload/pdf">Download PDF</a>
+    </body></html>
+    """
+    source = HTMLLandingSource(
+        downloader=_ProbeAwareDownloader(
+            html=html, probe_ok={"https://www.mdpi.com/user/manuscripts/upload/pdf"}
+        )
+    )  # type: ignore[arg-type]
+
+    assert source.get_pdf_url("https://example.org/article/123") is None
 
 
 def test_html_landing_fast_fail_rejects_unprobed_candidates():
@@ -282,3 +376,66 @@ def test_html_landing_fast_fail_rejects_unprobed_candidates():
     source = HTMLLandingSource(downloader=_FastFailRejectUnprobedDownloader(html=html))  # type: ignore[arg-type]
 
     assert source.get_pdf_url("https://academia.edu/12345/example") is None
+
+
+def test_html_landing_extracts_pdf_from_access_denied_403_snapshot():
+    html = (
+        "<html><body>You don't have permission to access "
+        '"http&#58;&#47;&#47;www&#46;mdpi&#46;com&#47;1996&#45;1073&#47;15&#47;15&#47;5603&#47;pdf"'
+        " on this server."
+        "</body></html>"
+    )
+    expected = "http://www.mdpi.com/1996-1073/15/15/5603/pdf"
+    source = HTMLLandingSource(
+        downloader=_ProbeAwareDownloader(html=html, probe_ok={expected}, status=403)
+    )  # type: ignore[arg-type]
+
+    assert source.get_pdf_url("https://www.mdpi.com/1996-1073/15/15/5603/main") == expected
+
+
+def test_html_landing_fast_fail_uses_jina_reader_fallback_on_403():
+    expected = "https://journals.sagepub.com/doi/pdf/10.1177/02655322241234567"
+    downloader = _ReaderFallbackDownloader(
+        base_html=(
+            "<html><title>Just a moment...</title>"
+            "Enable JavaScript and cookies to continue window._cf_chl_opt</html>"
+        ),
+        base_status=403,
+        reader_html=f'<html><meta name="citation_pdf_url" content="{expected}" /></html>',
+        reader_status=200,
+        probe_ok={expected},
+    )
+    source = HTMLLandingSource(downloader=downloader)  # type: ignore[arg-type]
+
+    assert (
+        source.get_pdf_url("https://journals.sagepub.com/doi/10.1177/02655322241234567") == expected
+    )
+    assert downloader.reader_calls == 1
+
+
+def test_html_landing_fast_fail_reader_fallback_not_used_for_non_target_host():
+    downloader = _ReaderFallbackDownloader(
+        base_html="<html><title>Just a moment...</title></html>",
+        base_status=403,
+        reader_html='<html><meta name="citation_pdf_url" content="https://example.org/a.pdf" /></html>',
+        reader_status=200,
+    )
+    source = HTMLLandingSource(downloader=downloader)  # type: ignore[arg-type]
+
+    assert source.get_pdf_url("https://minds.wisconsin.edu/handle/1793/7889") is None
+    assert downloader.reader_calls == 0
+
+
+def test_html_landing_fast_fail_reader_fallback_is_lazy_when_primary_probe_succeeds():
+    expected = "https://www.mdpi.com/1996-1073/16/1/519/pdf"
+    downloader = _ReaderFallbackDownloader(
+        base_html=f'<html><meta name="citation_pdf_url" content="{expected}" /></html>',
+        base_status=403,
+        reader_html='<html><meta name="citation_pdf_url" content="https://example.org/other.pdf" /></html>',
+        reader_status=200,
+        probe_ok={expected},
+    )
+    source = HTMLLandingSource(downloader=downloader)  # type: ignore[arg-type]
+
+    assert source.get_pdf_url("https://www.mdpi.com/1996-1073/16/1/519") == expected
+    assert downloader.reader_calls == 0

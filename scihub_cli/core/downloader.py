@@ -57,10 +57,32 @@ class FileDownloader:
         "asiacleanenergyforum.adb.org",
         "cathi.uacj.mx",
         "ijltemas.in",
+        "asmedigitalcollection.asme.org",
+        "durham-repository.worktribe.com",
+        "orbit.dtu.dk",
+        "researchers.mq.edu.au",
     )
     _FAST_FAIL_SKIP_CHALLENGE_DOWNLOAD_HOSTS = (
         "sciencedirect.com",
         "researchgate.net",
+        "academia.edu",
+        "sk.sagepub.com",
+        "ideas.repec.org",
+        "scispace.com",
+    )
+    _FAST_FAIL_PAGE_BYPASS_HOSTS = (
+        "mdpi.com",
+        "doi.org",
+        "journals.sagepub.com",
+        "papers.ssrn.com",
+        "onlinelibrary.wiley.com",
+        "asmedigitalcollection.asme.org",
+        "durham-repository.worktribe.com",
+    )
+    _FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS = (
+        "academia.edu",
+        "sk.sagepub.com",
+        "methods.sagepub.com",
     )
     _ACADEMIC_HOST_MARKERS = (
         "arxiv.org",
@@ -83,6 +105,10 @@ class FileDownloader:
         "doaj.org",
         "hindawi.com",
         "frontiersin.org",
+        "doi.org",
+        "dx.doi.org",
+        "ieee.org",
+        "sdewes.org",
         "energy.gov",
         "ssrn.com",
         "zenodo.org",
@@ -90,6 +116,13 @@ class FileDownloader:
         "europepmc.org",
         "link.springer.com",
         "ideas.repec.org",
+        "asme.org",
+        "intechopen.com",
+        "dergipark.org.tr",
+        "iaea.org",
+        "ugent.be",
+        "ceon.rs",
+        "scirp.org",
     )
     _NON_ACADEMIC_HOST_MARKERS = (
         "tiktok.com",
@@ -120,6 +153,36 @@ class FileDownloader:
         "thestreet.com",
         "washingtonstand.com",
         "thetrailblazer.co.uk",
+        "sky.com",
+        "investors.com",
+        "businessinsider.com",
+        "bloomberg.com",
+        "cnbc.com",
+        "fortune.com",
+        "britannica.com",
+        "merriam-webster.com",
+        "finance.yahoo.com",
+        "motortrend.com",
+        "creativeboom.com",
+        "365dm.com",
+        "x666.me",
+        "brandvm.com",
+        "cdotimes.com",
+        "nikkeibizruptors.com",
+        "globalspec.com",
+        "yahoo.com",
+        "imgix.net",
+        "academia-photos.com",
+        "jlaforums.com",
+        "avanzaagency.com",
+        "thesiliconreview.com",
+        "mediawatcher.ai",
+        "nielseniq.com",
+        "autocar.co.uk",
+        "forbes.com",
+        "reuters.com",
+        "euronews.com",
+        "slidesharecdn.com",
     )
     _FAST_FAIL_DEADLINE_MIN_SECONDS_FOR_GRACE = 5.0
     _FAST_FAIL_DEADLINE_PROGRESS_MIN_BYTES = 256 * 1024
@@ -464,11 +527,13 @@ class FileDownloader:
     ) -> tuple[bool, str | None]:
         if not self._should_try_fast_fail_lightweight_bypass(url, trigger_error):
             return False, None
+        if self._should_skip_fast_fail_bypass_for_hard_block(url, trigger_error):
+            return False, "Hard access block detected; skipping lightweight bypass"
         logger.info(f"Fast-fail lightweight bypass attempt (curl_cffi): {url}")
         success, error = self._download_with_curl_cffi(url, output_path, progress_callback)
         if success:
             return True, None
-        if not self._should_retry_fast_fail_lightweight_bypass(error):
+        if not self._should_retry_fast_fail_lightweight_bypass(error, url=url):
             return False, error
         logger.info(f"Fast-fail lightweight bypass retry (curl_cffi): {url}")
         retry_success, retry_error = self._download_with_curl_cffi(
@@ -511,9 +576,35 @@ class FileDownloader:
             )
         )
 
-    @staticmethod
-    def _should_retry_fast_fail_lightweight_bypass(error_msg: str | None) -> bool:
+    def _should_retry_fast_fail_lightweight_bypass(
+        self, error_msg: str | None, *, url: str | None = None
+    ) -> bool:
         lowered = (error_msg or "").lower()
+        if "http 403" in lowered:
+            parsed = urlparse((url or "").strip())
+            host = parsed.netloc.lower()
+            if any(
+                marker in host
+                for marker in (
+                    "mdpi.com",
+                    "mdpi-res.com",
+                    "res.mdpi.com",
+                )
+            ):
+                events = getattr(self._trace_local, "download_html_events", None)
+                if isinstance(events, list):
+                    for event in reversed(events):
+                        if not isinstance(event, dict):
+                            continue
+                        if event.get("status_code") != 403:
+                            continue
+                        html = event.get("html")
+                        if isinstance(html, str) and self._is_akamai_access_denied_html(html):
+                            # Hard block: avoid wasting time on duplicate retries.
+                            return False
+                        break
+                # Soft/unknown 403s can occasionally recover on immediate retry.
+                return True
         return any(
             token in lowered
             for token in (
@@ -528,6 +619,24 @@ class FileDownloader:
             )
         )
 
+    def _should_skip_fast_fail_bypass_for_hard_block(self, url: str, trigger_error: str) -> bool:
+        if "403" not in (trigger_error or "").lower():
+            return False
+        events = getattr(self._trace_local, "download_html_events", None)
+        if not isinstance(events, list):
+            return False
+        for event in reversed(events):
+            if not isinstance(event, dict):
+                continue
+            if event.get("status_code") != 403:
+                continue
+            html = event.get("html")
+            if isinstance(html, str) and self._is_akamai_access_denied_html(html):
+                logger.info("Fast-fail detected Akamai hard block; bypass skipped")
+                return True
+            break
+        return False
+
     def probe_pdf_url(self, url: str) -> bool:
         """
         Probe a URL to see if it appears to serve a PDF without downloading it.
@@ -540,6 +649,11 @@ class FileDownloader:
             response = self.session.get(url, timeout=self.timeout, stream=True)
 
             if response.status_code == 403:
+                content_type = (response.headers.get("Content-Type", "") or "").lower()
+                response_text = response.text if isinstance(response.text, str) else ""
+                if "html" in content_type and self._should_fast_fail_probe_403_html(response_text):
+                    logger.debug(f"Probe got gated/challenge HTML on 403 for {url}; rejecting")
+                    return False
                 logger.debug(f"Probe got 403 for {url}; treating as potentially valid PDF")
                 return True
             if response.status_code != 200:
@@ -856,8 +970,6 @@ class FileDownloader:
             # Use Chrome 110 impersonation - works well for most CDNs
             logger.debug(f"[curl_cffi] Downloading with Chrome 110 impersonation: {url}")
             response = cf_requests.get(url, impersonate="chrome110", timeout=self.timeout)
-
-            # Update last request time for this domain
             self._last_bypass_time[domain] = time.time()
 
             if response.status_code != 200:
@@ -941,8 +1053,25 @@ class FileDownloader:
 
             # If we get 403, try curl_cffi bypass
             if response.status_code == 403:
+                if self._is_akamai_access_denied_html(response.text):
+                    logger.info(
+                        "Detected Akamai access-denied hard block; skipping page bypass attempts"
+                    )
+                    return response.text, response.status_code
                 if self.fast_fail and not force_challenge_bypass:
-                    logger.info("Fast-fail enabled: skipping 403 bypass for page access")
+                    if not self._should_attempt_fast_fail_page_bypass(url, response.text):
+                        logger.info("Fast-fail enabled: skipping 403 bypass for page access")
+                        return response.text, response.status_code
+                    logger.info(
+                        "Fast-fail enabled: trying single curl_cffi page bypass for recoverable host"
+                    )
+                    html, status = self._get_page_with_curl_cffi(
+                        url, timeout_seconds=request_timeout
+                    )
+                    if html:
+                        logger.info("Successfully fetched page using curl_cffi bypass")
+                        return html, status
+                    logger.warning("curl_cffi bypass failed for fast-fail page access")
                     return response.text, response.status_code
                 logger.warning("Got 403 accessing page, attempting cloudscraper bypass...")
                 html, status = self._get_page_with_cloudscraper(
@@ -1175,3 +1304,90 @@ class FileDownloader:
                 error=str(e),
             )
             return None, None
+
+    @classmethod
+    def _is_hard_challenge_block_html(cls, html: str) -> bool:
+        lowered = (html or "").lower()
+        return any(
+            token in lowered
+            for token in (
+                "attention required! | cloudflare",
+                "cloudflare ray id",
+                "cf-error-details",
+                "captcha.awswaf.com",
+                "captchascript.rendercaptcha",
+                "verify that you're not a robot",
+                "recaptcha/api.js",
+                "grecaptcha.render",
+            )
+        )
+
+    @staticmethod
+    def _is_akamai_access_denied_html(html: str) -> bool:
+        lowered = (html or "").lower()
+        return (
+            "access denied" in lowered
+            and "errors.edgesuite.net" in lowered
+            and "don't have permission to access" in lowered
+        )
+
+    @classmethod
+    def _is_challenge_html(cls, html: str) -> bool:
+        lowered = (html or "").lower()
+        return any(
+            token in lowered
+            for token in (
+                "just a moment...",
+                "enable javascript and cookies to continue",
+                "window._cf_chl_opt",
+                "/cdn-cgi/challenge-platform/",
+                "__cf_chl",
+            )
+        )
+
+    @classmethod
+    def _is_auth_or_paywall_html(cls, html: str) -> bool:
+        lowered = (html or "").lower()
+        return any(
+            token in lowered
+            for token in (
+                "sign up or log in to continue reading",
+                "institutional login",
+                "institutional access",
+                "openathens",
+                "shibboleth",
+                "subscribe",
+                "subscription",
+                "purchase this article",
+                "buy article",
+                "rent this article",
+                "get access",
+                "paywall",
+                "open-login-modal",
+                "download free pdf",
+                "subscribers only",
+            )
+        )
+
+    @classmethod
+    def _should_fast_fail_probe_403_html(cls, html: str) -> bool:
+        return (
+            cls._is_hard_challenge_block_html(html)
+            or cls._is_challenge_html(html)
+            or cls._is_auth_or_paywall_html(html)
+        )
+
+    def _should_attempt_fast_fail_page_bypass(self, url: str, html: str) -> bool:
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        host = parsed.netloc.lower()
+        if any(marker in host for marker in self._FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS):
+            return False
+        if not any(marker in host for marker in self._FAST_FAIL_PAGE_BYPASS_HOSTS):
+            return False
+        if self._is_hard_challenge_block_html(html):
+            return False
+        if self._is_auth_or_paywall_html(html):
+            return False
+        return self._is_challenge_html(html)

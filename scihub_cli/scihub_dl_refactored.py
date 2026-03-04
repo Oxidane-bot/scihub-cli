@@ -110,7 +110,7 @@ def main():
         "--parallel",
         type=int,
         default=settings.parallel,
-        help="Number of parallel downloads (threads)",
+        help=f"Number of parallel downloads (threads) (default: {settings.parallel})",
     )
     parser.add_argument(
         "--to-md",
@@ -182,6 +182,19 @@ def main():
         type=float,
         help="Hard per-attempt download deadline in seconds (overrides auto profile)",
     )
+    parser.add_argument(
+        "--academic-only",
+        dest="academic_only",
+        action="store_true",
+        default=True,
+        help="Filter out obvious non-academic URLs before downloading (default)",
+    )
+    parser.add_argument(
+        "--no-academic-only",
+        dest="academic_only",
+        action="store_false",
+        help="Disable academic-only filtering and process all input URLs",
+    )
     parser.add_argument("--email", help="Email for Unpaywall API (saves to config file)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--version", action="version", version=f"scihub-cli v{__version__}")
@@ -225,6 +238,7 @@ def main():
         enable_core=args.enable_core and not args.disable_core,
         fast_fail=args.fast_fail,
         download_deadline_seconds=args.download_deadline,
+        academic_only=args.academic_only,
     )
 
     # Download papers

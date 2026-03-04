@@ -36,6 +36,7 @@ def test_source_manager_routes_arxiv_url_with_url_fallback_chain():
 def test_source_manager_routes_non_url_arxiv_identifier_to_oa_chain():
     sources = [
         _StubSource("arXiv", can_handle_result=True),
+        _StubSource("OpenAlex"),
         _StubSource("Unpaywall"),
         _StubSource("CORE"),
         _StubSource("Sci-Hub"),
@@ -44,4 +45,10 @@ def test_source_manager_routes_non_url_arxiv_identifier_to_oa_chain():
 
     chain = manager.get_source_chain("arXiv:1202.2745")
 
-    assert [source.name for source in chain] == ["arXiv", "Unpaywall", "CORE", "Sci-Hub"]
+    assert [source.name for source in chain] == [
+        "arXiv",
+        "OpenAlex",
+        "Unpaywall",
+        "CORE",
+        "Sci-Hub",
+    ]

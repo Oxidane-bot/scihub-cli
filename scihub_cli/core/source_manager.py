@@ -87,9 +87,9 @@ class SourceManager:
         # Non-URL arXiv identifiers: OA chain is still appropriate.
         if "arXiv" in self.sources and self.sources["arXiv"].can_handle(doi):
             logger.info(
-                "[Router] Detected arXiv identifier, using arXiv -> Unpaywall -> CORE -> Sci-Hub"
+                "[Router] Detected arXiv identifier, using arXiv -> OpenAlex -> Unpaywall -> CORE -> Sci-Hub"
             )
-            return self._build_chain(["arXiv", "Unpaywall", "CORE", "Sci-Hub"])
+            return self._build_chain(["arXiv", "OpenAlex", "Unpaywall", "CORE", "Sci-Hub"])
 
         # If the input is a URL, prefer URL-specific handlers first.
         if is_url_input:
@@ -109,23 +109,23 @@ class SourceManager:
         if year is None:
             # Unknown year: conservative strategy (OA first with Sci-Hub fallback)
             logger.info(
-                f"[Router] Year unknown for {doi}, using Unpaywall -> arXiv -> CORE -> Sci-Hub"
+                f"[Router] Year unknown for {doi}, using OpenAlex -> Unpaywall -> arXiv -> CORE -> Sci-Hub"
             )
-            chain = self._build_chain(["Unpaywall", "arXiv", "CORE", "Sci-Hub"])
+            chain = self._build_chain(["OpenAlex", "Unpaywall", "arXiv", "CORE", "Sci-Hub"])
 
         elif year < self.year_threshold:
             # Old papers: OA first for speed, Sci-Hub fallback for coverage
             logger.info(
-                f"[Router] Year {year} < {self.year_threshold}, using Unpaywall -> arXiv -> CORE -> Sci-Hub"
+                f"[Router] Year {year} < {self.year_threshold}, using OpenAlex -> Unpaywall -> arXiv -> CORE -> Sci-Hub"
             )
-            chain = self._build_chain(["Unpaywall", "arXiv", "CORE", "Sci-Hub"])
+            chain = self._build_chain(["OpenAlex", "Unpaywall", "arXiv", "CORE", "Sci-Hub"])
 
         else:
             # New papers: Sci-Hub has no coverage, OA only
             logger.info(
-                f"[Router] Year {year} >= {self.year_threshold}, using Unpaywall -> arXiv -> CORE"
+                f"[Router] Year {year} >= {self.year_threshold}, using OpenAlex -> Unpaywall -> arXiv -> CORE"
             )
-            chain = self._build_chain(["Unpaywall", "arXiv", "CORE"])
+            chain = self._build_chain(["OpenAlex", "Unpaywall", "arXiv", "CORE"])
 
         return chain
 
@@ -577,8 +577,9 @@ class SourceManager:
 
         Priority:
         1. Check Unpaywall cache (free, already fetched)
-        2. Check YearDetector cache (from previous lookup)
-        3. Fetch from Crossref via YearDetector (as fallback)
+        2. Check OpenAlex cache
+        3. Check YearDetector cache (from previous lookup)
+        4. Fetch from Crossref via YearDetector (as fallback)
 
         This avoids redundant API calls when Unpaywall data is already available.
         """
@@ -592,12 +593,22 @@ class SourceManager:
                 logger.debug(f"[Router] Year {year} from Unpaywall cache for {doi}")
                 return year
 
-        # 2. Try YearDetector cache (avoids creating detector if not needed)
+        # 2. Try OpenAlex cache (if source exists and exposes cached metadata)
+        openalex = self.sources.get("OpenAlex")
+        get_cached_metadata = getattr(openalex, "get_cached_metadata", None)
+        if callable(get_cached_metadata):
+            cached = get_cached_metadata(doi)
+            if cached and cached.get("year"):
+                year = cached["year"]
+                logger.debug(f"[Router] Year {year} from OpenAlex cache for {doi}")
+                return year
+
+        # 3. Try YearDetector cache (avoids creating detector if not needed)
         if self._year_detector is not None and doi in self._year_detector.cache:
             year = self._year_detector.cache[doi]
             logger.debug(f"[Router] Year {year} from YearDetector cache for {doi}")
             return year
 
-        # 3. Fallback: fetch from Crossref via YearDetector
+        # 4. Fallback: fetch from Crossref via YearDetector
         logger.debug(f"[Router] Fetching year from Crossref for {doi}")
         return self.year_detector.get_year(doi)

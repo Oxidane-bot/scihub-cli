@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 class UnpaywallSource(PaperSource):
     """Unpaywall open access paper source."""
 
-    def __init__(self, email: str, timeout: int = 30):
+    def __init__(self, email: str, timeout: int = 30, *, fast_fail: bool = False):
         """
         Initialize Unpaywall source.
 
@@ -30,7 +30,8 @@ class UnpaywallSource(PaperSource):
             timeout: Request timeout in seconds
         """
         self.email = email
-        self.timeout = timeout
+        self.fast_fail = fast_fail
+        self.timeout = min(timeout, 5) if fast_fail else timeout
         self.base_url = "https://api.unpaywall.org/v2"
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": f"scihub-cli/1.0 (mailto:{email})"})
@@ -40,6 +41,10 @@ class UnpaywallSource(PaperSource):
 
         # Retry configuration for API calls
         self.retry_config = APIRetryConfig()
+        if self.fast_fail:
+            self.retry_config.max_attempts = 2
+            self.retry_config.base_delay = 0.0
+            self.retry_config.max_delay = 0.0
 
     @property
     def name(self) -> str:
