@@ -3,8 +3,12 @@ Unpaywall source implementation.
 """
 
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+
+from ..core.pdf_link_extractor import derive_publisher_pdf_candidates, should_try_html_landing
 
 from ..utils.logging import get_logger
 from ..utils.retry import (
@@ -21,6 +25,15 @@ logger = get_logger(__name__)
 class UnpaywallSource(PaperSource):
     """Unpaywall open access paper source."""
 
+    _FAST_FAIL_SKIP_PDF_HOSTS = (
+        "sciencedirect.com",
+        "onlinelibrary.wiley.com",
+        "tandfonline.com",
+        "academic.oup.com",
+        "downloads.hindawi.com",
+        "scispace.com",
+    )
+
     def __init__(self, email: str, timeout: int = 30, *, fast_fail: bool = False):
         """
         Initialize Unpaywall source.
@@ -34,7 +47,11 @@ class UnpaywallSource(PaperSource):
         self.timeout = min(timeout, 5) if fast_fail else timeout
         self.base_url = "https://api.unpaywall.org/v2"
         self.session = requests.Session()
+        self.session.trust_env = False
         self.session.headers.update({"User-Agent": f"scihub-cli/1.0 (mailto:{email})"})
+        adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
         # Metadata caching
         self._metadata_cache: dict[str, Optional[dict]] = {}
@@ -76,6 +93,9 @@ class UnpaywallSource(PaperSource):
         # Get PDF URL from cached metadata
         pdf_url = metadata.get("pdf_url")
         if pdf_url:
+            if self._should_skip_pdf_url(pdf_url):
+                logger.info(f"[Unpaywall] Fast-fail skip challenge-heavy PDF URL: {pdf_url}")
+                return None
             oa_status = metadata.get("oa_status", "unknown")
             logger.info(f"[Unpaywall] Found OA paper (status: {oa_status}): {doi}")
             logger.debug(f"[Unpaywall] PDF URL: {pdf_url}")
@@ -83,6 +103,19 @@ class UnpaywallSource(PaperSource):
         else:
             logger.warning(f"[Unpaywall] No PDF URL in OA location for {doi}")
             return None
+
+    def _should_skip_pdf_url(self, pdf_url: str) -> bool:
+        if not self.fast_fail or not pdf_url:
+            return False
+        parsed = urlparse(pdf_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        host = parsed.netloc.lower()
+        if not any(marker in host for marker in self._FAST_FAIL_SKIP_PDF_HOSTS):
+            return False
+        path = (parsed.path or "").lower()
+        query = (parsed.query or "").lower()
+        return path.endswith(".pdf") or ".pdf" in query or "/pdf" in path or "pdfft" in path
 
     def get_metadata(self, doi: str) -> Optional[dict[str, Any]]:
         """
@@ -165,6 +198,10 @@ class UnpaywallSource(PaperSource):
 
                 # Prefer url_for_pdf (direct PDF link)
                 pdf_url = best_oa.get("url_for_pdf")
+                landing_url = None
+                if pdf_url and not self._looks_like_pdf_url(pdf_url):
+                    landing_url = pdf_url
+                    pdf_url = None
 
                 # If no direct PDF, validate the fallback URL
                 if not pdf_url:
@@ -177,6 +214,21 @@ class UnpaywallSource(PaperSource):
                             f"[Unpaywall] Only landing page available, no direct PDF: {fallback_url}"
                         )
                         # pdf_url remains None
+                if not pdf_url:
+                    landing_url = landing_url or best_oa.get("url")
+                    derived = self._derive_pdf_from_landing_url(landing_url)
+                    if derived:
+                        if self._should_skip_pdf_url(derived):
+                            logger.info(
+                                f"[Unpaywall] Fast-fail skip derived PDF candidate: {derived}"
+                            )
+                        else:
+                            logger.debug(
+                                f"[Unpaywall] Derived PDF candidate from landing page: {derived}"
+                            )
+                            pdf_url = derived
+                if not pdf_url and should_try_html_landing(landing_url):
+                    pdf_url = landing_url
 
                 # Keep year as int for proper comparison with thresholds
                 year = data.get("year")
@@ -263,3 +315,12 @@ class UnpaywallSource(PaperSource):
         ]
 
         return any(pattern in url_lower for pattern in pdf_patterns)
+
+    @staticmethod
+    def _derive_pdf_from_landing_url(landing_url: str | None) -> str | None:
+        if not landing_url:
+            return None
+        candidates = derive_publisher_pdf_candidates(landing_url)
+        if not candidates:
+            return None
+        return candidates[0]

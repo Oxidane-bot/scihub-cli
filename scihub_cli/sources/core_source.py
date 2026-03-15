@@ -40,6 +40,7 @@ class CORESource(PaperSource):
         self.base_url = "https://api.core.ac.uk/v3"
 
         self.session = requests.Session()
+        self.session.trust_env = False
         self.session.headers.update({"User-Agent": "scihub-cli/1.0 (academic research tool)"})
 
         if api_key:

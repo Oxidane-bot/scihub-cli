@@ -24,12 +24,12 @@ class HTMLLandingSource(PaperSource):
     _MIN_CANDIDATE_SCORE = 500
     _MAX_PROBE_CANDIDATES = 3
     _FAST_FAIL_SKIP_HTML_HOST_MARKERS = (
-        "sciencedirect.com",
         "researchgate.net",
         "academia.edu",
         "sk.sagepub.com",
         "ideas.repec.org",
         "scispace.com",
+        "sciencedirect.com",
     )
     _FAST_FAIL_FORCE_PAGE_BYPASS_HOST_MARKERS = (
         "mdpi.com",
@@ -232,11 +232,7 @@ class HTMLLandingSource(PaperSource):
         base_url = self._strip_fragment(base_url)
         host = urlparse(base_url).netloc.lower()
         fast_fail = bool(getattr(self.downloader, "fast_fail", False))
-        if fast_fail and self._should_skip_html_fetch(host):
-            logger.debug(
-                f"[HTML Landing] Fast-fail skip challenge-heavy host before prefetch: {host}"
-            )
-            return None
+        skip_html_fetch = fast_fail and self._should_skip_html_fetch(host)
 
         # Try deterministic publisher URL derivation before full-page fetch.
         prefetch_candidates = derive_publisher_pdf_candidates(base_url)
@@ -257,6 +253,11 @@ class HTMLLandingSource(PaperSource):
         prefetched = self._probe_candidates(prefetch_candidates, mode="prefetch")
         if prefetched:
             return prefetched
+        if skip_html_fetch:
+            logger.debug(
+                f"[HTML Landing] Fast-fail skip challenge-heavy host before full-page fetch: {host}"
+            )
+            return None
 
         force_challenge_bypass = fast_fail and any(
             marker in host for marker in self._FAST_FAIL_FORCE_PAGE_BYPASS_HOST_MARKERS
@@ -265,6 +266,9 @@ class HTMLLandingSource(PaperSource):
             base_url, force_challenge_bypass=force_challenge_bypass
         )
         if not html:
+            return None
+        if fast_fail and self._looks_like_challenge_html(html):
+            logger.debug("[HTML Landing] Fast-fail: challenge HTML detected, skipping extraction")
             return None
 
         if self._should_force_reader_before_extraction(

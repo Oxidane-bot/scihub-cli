@@ -80,7 +80,10 @@ def main():
     parser = argparse.ArgumentParser(
         prog="scihub-cli",
         description="Multi-source academic paper downloader.",
-        epilog=f"v{__version__} - Sources: Sci-Hub, Unpaywall, arXiv, CORE | Features: intelligent routing",
+        epilog=(
+            f"v{__version__} - Sources: OpenAlex, Europe PMC, Unpaywall, arXiv, CORE, Sci-Hub "
+            "| Features: intelligent routing"
+        ),
     )
 
     parser.add_argument("input_file", help="Text file containing DOIs or URLs (one per line)")

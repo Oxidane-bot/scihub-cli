@@ -26,6 +26,7 @@ class PMCSource(PaperSource):
 
     def __init__(self, downloader: FileDownloader):
         self.downloader = downloader
+        self._metadata_cache: dict[str, dict[str, str] | None] = {}
 
     @property
     def name(self) -> str:
@@ -49,6 +50,9 @@ class PMCSource(PaperSource):
         html, status = self.downloader.get_page_content(article_url)
         if html and status == 200:
             pdf_url = self._extract_pdf_url_from_html(html, article_url, pmc_id)
+            metadata = self._extract_metadata_from_html(html)
+            if metadata:
+                self._metadata_cache[pmc_id] = metadata
             if pdf_url:
                 logger.info(f"[PMC] Found PDF for {pmc_id}")
                 return pdf_url
@@ -63,6 +67,12 @@ class PMCSource(PaperSource):
             return candidate
 
         return None
+
+    def get_metadata(self, identifier: str) -> dict[str, str] | None:
+        pmc_id = self._extract_pmc_id(identifier)
+        if not pmc_id:
+            return None
+        return self._metadata_cache.get(pmc_id)
 
     @classmethod
     def _extract_pmc_id(cls, identifier: str) -> str | None:
@@ -137,6 +147,31 @@ class PMCSource(PaperSource):
         if link_candidates:
             return urljoin(base_url, link_candidates[0])
 
+        return None
+
+    @classmethod
+    def _extract_metadata_from_html(cls, html: str) -> dict[str, str] | None:
+        soup = BeautifulSoup(html, "html.parser")
+        doi = None
+
+        meta = soup.find("meta", attrs={"name": re.compile(r"citation_doi", re.I)})
+        if meta and meta.get("content"):
+            doi = meta["content"].strip()
+
+        if not doi:
+            meta = soup.find("meta", attrs={"name": re.compile(r"dc.identifier", re.I)})
+            if meta and meta.get("content"):
+                content = meta["content"].strip()
+                if content.lower().startswith("doi:"):
+                    doi = content.split(":", 1)[1].strip()
+
+        if not doi:
+            match = re.search(r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+\b", html)
+            if match:
+                doi = match.group(0)
+
+        if doi:
+            return {"doi": doi}
         return None
 
     @staticmethod

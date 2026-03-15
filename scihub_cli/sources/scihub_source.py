@@ -40,6 +40,7 @@ class SciHubSource(PaperSource):
         "sci-hub.ren",
         "sci-hub.ee",
     )
+    _BLOCKED_COOLDOWN_SECONDS = 600.0
 
     def __init__(
         self,
@@ -61,6 +62,7 @@ class SciHubSource(PaperSource):
         self.parser = parser
         self.doi_processor = doi_processor
         self.downloader = downloader
+        self._blocked_until = 0.0
 
     @property
     def name(self) -> str:
@@ -81,6 +83,14 @@ class SciHubSource(PaperSource):
             PDF URL if found, None otherwise
         """
         try:
+            if self._BLOCKED_COOLDOWN_SECONDS > 0:
+                now = time.monotonic()
+                if now < self._blocked_until:
+                    remaining = int(self._blocked_until - now)
+                    logger.info(
+                        f"[Sci-Hub] Skipping mirror attempts (cooldown {remaining}s remaining)"
+                    )
+                    return None
             fast_fail = bool(getattr(self.downloader, "fast_fail", False))
             if fast_fail and self._should_skip_fast_fail_for_low_confidence_doi(doi):
                 logger.info(f"[Sci-Hub] Fast-fail skip low-confidence DOI pattern: {doi}")
@@ -126,6 +136,7 @@ class SciHubSource(PaperSource):
             if fast_fail and len(mirrors) > max_mirrors:
                 mirrors = mirrors[:max_mirrors]
 
+            blocked_count = 0
             for mirror in mirrors:
                 page_timeout: float | None = None
                 if deadline is not None:
@@ -136,7 +147,7 @@ class SciHubSource(PaperSource):
                     page_timeout = max(1.0, min(page_timeout_cap, remaining))
                 if mirror != preferred_mirror:
                     logger.info(f"[Sci-Hub] Switching mirror to {mirror} for {doi}")
-                download_url, page_ok = self._get_download_url_from_mirror(
+                download_url, page_ok, blocked = self._get_download_url_from_mirror(
                     mirror,
                     doi,
                     fast_fail=fast_fail,
@@ -149,6 +160,18 @@ class SciHubSource(PaperSource):
                     return download_url
                 if not page_ok:
                     self.mirror_manager.mark_failed(mirror)
+                if blocked:
+                    blocked_count += 1
+
+            if (
+                self._BLOCKED_COOLDOWN_SECONDS > 0
+                and blocked_count
+                and blocked_count == len(mirrors)
+            ):
+                self._blocked_until = time.monotonic() + self._BLOCKED_COOLDOWN_SECONDS
+                logger.warning(
+                    f"[Sci-Hub] All mirrors returned block pages; cooling down for {int(self._BLOCKED_COOLDOWN_SECONDS)}s"
+                )
 
             logger.warning(f"[Sci-Hub] Could not extract download URL for {doi}")
             return None
@@ -168,7 +191,7 @@ class SciHubSource(PaperSource):
         page_timeout: float | None = None,
         allow_fast_fail_status_fallback: bool = False,
         allow_challenge_bypass: bool = False,
-    ) -> tuple[Optional[str], bool]:
+    ) -> tuple[Optional[str], bool, bool]:
         """Attempt to extract a PDF URL from a specific Sci-Hub mirror."""
         formatted_doi = self.doi_processor.format_doi_for_url(doi) if doi.startswith("10.") else doi
         scihub_url = f"{mirror}/{formatted_doi}"
@@ -190,7 +213,10 @@ class SciHubSource(PaperSource):
                 )
             if not html_content or status_code != 200:
                 logger.warning(f"[Sci-Hub] Failed to access page: {status_code}")
-                return None, False
+                return None, False, False
+        if html_content and self.parser._looks_like_scihub_block_page(html_content):
+            logger.warning(f"[Sci-Hub] Detected blocked mirror page for {mirror}")
+            return None, True, True
 
         download_url = self.parser.extract_download_url(html_content, mirror)
         if (
@@ -209,9 +235,9 @@ class SciHubSource(PaperSource):
                 download_url = self.parser.extract_download_url(html_content, mirror)
 
         if download_url:
-            return download_url, True
+            return download_url, True, False
         logger.warning(f"[Sci-Hub] Could not extract download URL for {doi} via {mirror}")
-        return None, True
+        return None, True, False
 
     @staticmethod
     def _should_skip_fast_fail_for_low_confidence_doi(doi: str) -> bool:

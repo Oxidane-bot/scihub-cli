@@ -1,6 +1,6 @@
 # Sci-Hub CLI
 
-A command-line tool for batch downloading academic papers with multi-source support (OpenAlex, Sci-Hub, Unpaywall, arXiv, CORE).
+A command-line tool for batch downloading academic papers with multi-source support (OpenAlex, Europe PMC, Sci-Hub, Unpaywall, arXiv, CORE).
 
 *Read this in other languages: [English](README.md), [简体中文](README.zh-CN.md)*
 
@@ -8,6 +8,7 @@ A command-line tool for batch downloading academic papers with multi-source supp
 
 - **Multi-Source Support**: Intelligently routes downloads across multiple sources
   - **OpenAlex**: OA metadata + full-text link discovery (no email required)
+  - **Europe PMC**: OA full-text links for biomedical literature (no email required)
   - **arXiv**: Prioritized for preprints (free, no API key needed)
   - **Unpaywall**: For open access papers (requires email)
   - **Sci-Hub**: Fallback for older papers (coverage-driven, slower)
@@ -40,6 +41,7 @@ A command-line tool for batch downloading academic papers with multi-source supp
 - Enabled `--academic-only` filtering by default to exclude obvious non-academic links before download
 - Added high-signal URL normalization/deduplication for noisy inputs (tracking params/fragments/`www` variants)
 - Added OpenAlex source integration and improved OA-first routing behavior
+- Added Europe PMC OA source (biomedical OA coverage, no email required)
 - Improved fail-fast behavior for challenge/paywall pages to reduce wasted retries
 - Added robust PMC fallback to EuropePMC render endpoints when primary PMC PDF URLs return HTML
 - Updated default parallelism to `16` for better speed/success balance on large batches

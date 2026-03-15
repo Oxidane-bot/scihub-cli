@@ -24,6 +24,8 @@ from .network.session import BasicSession
 from .sources.arxiv_source import ArxivSource
 from .sources.core_source import CORESource
 from .sources.direct_pdf_source import DirectPDFSource
+from .sources.europe_pmc_oa_source import EuropePMCOASource
+from .sources.europe_pmc_source import EuropePMCSource
 from .sources.html_landing_source import HTMLLandingSource
 from .sources.openalex_source import OpenAlexSource
 from .sources.pmc_source import PMCSource
@@ -46,7 +48,11 @@ class SciHubClient:
         "library",
         "archive",
         "repository",
+        "repo",
+        "eprints",
+        "preprints",
         "university",
+        "univ",
         "institute",
         "college",
         "faculty",
@@ -54,6 +60,7 @@ class SciHubClient:
         "preprint",
         "arxiv",
         "academic",
+        "dtu",
     )
     _ACADEMIC_ONLY_EXTRA_NON_ACADEMIC_HOST_MARKERS = (
         "rebelliongroup.com",
@@ -88,6 +95,12 @@ class SciHubClient:
         "media.post.rvohealth.io",
         "historyofluxury.com",
         "whitehouse.gov",
+        "marketingdive.com",
+        "digitalcommerce360.com",
+        "growprogress.ai",
+        "angelone.in",
+        "univdatos.com",
+        "substack.com",
     )
     _ACADEMIC_PATH_HINTS = (
         "/doi/",
@@ -103,6 +116,15 @@ class SciHubClient:
         "/fulltext",
         "/bitstream/",
         "/handle/",
+        "/eprint/",
+        "/eprints/",
+        "/etd/",
+        "/thesis",
+        "/dissertation",
+        "/conference",
+        "/conferences",
+        "/ojs/",
+        "/dspace/",
         "/record/",
         "blobtype=pdf",
         "download=true",
@@ -155,6 +177,7 @@ class SciHubClient:
         self.fast_fail = fast_fail
         self.download_deadline_seconds = download_deadline_seconds
         self.academic_only = academic_only
+        self._pii_doi_cache: dict[str, str | None] = {}
 
         # Dependency injection with defaults
         self.mirror_manager = mirror_manager or MirrorManager(mirrors, self.timeout)
@@ -202,6 +225,16 @@ class SciHubClient:
                 ),
             )
 
+            # Europe PMC: OA discovery for biomedical literature (no email required)
+            sources.insert(
+                0,
+                EuropePMCSource(timeout=self.timeout, fast_fail=self.fast_fail),
+            )
+            sources.insert(
+                0,
+                EuropePMCOASource(timeout=self.timeout, fast_fail=self.fast_fail),
+            )
+
             # Only enable Unpaywall when email is provided
             if self.email:
                 sources.insert(
@@ -234,12 +267,37 @@ class SciHubClient:
         Uses fine-grained retry at lower layers (download, API calls).
         No coarse-grained retry at this level.
         """
-        doi = self.doi_processor.normalize_doi(identifier)
-        logger.info(f"Downloading paper: {doi}")
+        try:
+            cleaned_identifier = self._extract_identifier_from_line(identifier)
+            if cleaned_identifier:
+                identifier = cleaned_identifier
 
-        return self._download_single_paper(
-            identifier=identifier, normalized_identifier=doi, progress_callback=progress_callback
-        )
+            doi = self.doi_processor.normalize_doi(identifier)
+            logger.info(f"Downloading paper: {doi}")
+
+            if self.fast_fail and self._should_fast_fail_url(identifier, doi):
+                error = "Fast-fail: non-academic or non-document URL"
+                logger.error(error)
+                return DownloadResult(
+                    identifier=identifier,
+                    normalized_identifier=doi,
+                    success=False,
+                    error=error,
+                )
+
+            return self._download_single_paper(
+                identifier=identifier,
+                normalized_identifier=doi,
+                progress_callback=progress_callback,
+            )
+        except Exception as e:
+            logger.error(f"Download failed for {identifier}: {e}")
+            return DownloadResult(
+                identifier=identifier,
+                normalized_identifier=identifier,
+                success=False,
+                error=str(e),
+            )
 
     def _download_single_paper(
         self,
@@ -254,6 +312,15 @@ class SciHubClient:
         """
         start_time = time.time()
         html_events: list[dict[str, Any]] = []
+        if normalized_identifier.startswith("http") and "sciencedirect.com" in normalized_identifier.lower():
+            try:
+                resolved = self._resolve_sciencedirect_pii_to_doi(normalized_identifier)
+            except Exception as e:
+                logger.debug(f"Failed to resolve ScienceDirect PII: {e}")
+                resolved = None
+            if resolved:
+                logger.info(f"Resolved ScienceDirect PII to DOI: {resolved}")
+                normalized_identifier = resolved
 
         def _build_result(
             *,
@@ -323,31 +390,8 @@ class SciHubClient:
                 html_snapshots=self._persist_html_snapshots(identifier, html_events),
             )
 
-        download_candidates = self._collect_download_candidates(
-            primary_url=download_url,
-            source=source,
-            metadata=metadata,
-        )
-        if not download_candidates:
-            error = f"No valid download URL candidates for {normalized_identifier}"
-            logger.error(error)
-            return _build_result(
-                success=False,
-                metadata=metadata,
-                source=source,
-                download_url=download_url,
-                error=error,
-                source_attempts=source_attempts,
-                html_snapshots=self._persist_html_snapshots(identifier, html_events),
-            )
-        logger.debug(f"Download URL candidates ({len(download_candidates)}): {download_candidates}")
-
-        # Generate filename from metadata if available
-        filename = self._generate_filename(normalized_identifier, metadata)
-        output_path = self.file_manager.get_output_path(filename)
-
         progress_state = {"bytes": 0, "total": None}
-        active_download_url = {"url": download_candidates[0]}
+        active_download_url = {"url": download_url}
 
         def _handle_progress(bytes_downloaded: int, total_bytes: Optional[int]) -> None:
             progress_state["bytes"] = bytes_downloaded
@@ -368,53 +412,135 @@ class SciHubClient:
         error_msg: str | None = None
         attempted_errors: list[tuple[str, str]] = []
 
-        for index, candidate_url in enumerate(download_candidates, start=1):
-            active_download_url["url"] = candidate_url
-            logger.info(
-                f"Downloading via candidate URL ({index}/{len(download_candidates)}): {candidate_url}"
+        attempted_sources: set[str] = set()
+        max_fallback_rounds = 1
+        fallback_round = 0
+
+        while True:
+            download_candidates = self._collect_download_candidates(
+                primary_url=download_url,
+                source=source,
+                metadata=metadata,
+                source_attempts=source_attempts,
             )
-            push_trace = getattr(self.downloader, "push_trace_context", None)
-            clear_trace = getattr(self.downloader, "clear_trace_context", None)
-            use_download_trace = self.trace_html and callable(push_trace) and callable(clear_trace)
+            if not download_candidates:
+                error = f"No valid download URL candidates for {normalized_identifier}"
+                logger.error(error)
+                return _build_result(
+                    success=False,
+                    metadata=metadata,
+                    source=source,
+                    download_url=download_url,
+                    error=error,
+                    source_attempts=source_attempts,
+                    html_snapshots=self._persist_html_snapshots(identifier, html_events),
+                )
+            logger.debug(
+                f"Download URL candidates ({len(download_candidates)}): {download_candidates}"
+            )
 
-            if use_download_trace:
-                push_trace(
-                    {
-                        "identifier": normalized_identifier,
-                        "source": source or "unknown_source",
-                        "phase": "download",
-                        "candidate_index": index,
-                        "candidate_total": len(download_candidates),
-                    },
-                    html_snapshot_callback=_collect_html_snapshot,
+            # Generate filename from metadata if available
+            filename = self._generate_filename(normalized_identifier, metadata)
+            output_path = self.file_manager.get_output_path(filename)
+
+            attempted_errors.clear()
+            success = False
+            error_msg = None
+            active_download_url["url"] = download_candidates[0]
+
+            for index, candidate_url in enumerate(download_candidates, start=1):
+                active_download_url["url"] = candidate_url
+                logger.info(
+                    f"Downloading via candidate URL ({index}/{len(download_candidates)}): {candidate_url}"
                 )
-            try:
-                success, error_msg = self.downloader.download_file(
-                    candidate_url,
-                    output_path,
-                    progress_callback=_handle_progress if progress_callback else None,
-                )
-            finally:
+                push_trace = getattr(self.downloader, "push_trace_context", None)
+                clear_trace = getattr(self.downloader, "clear_trace_context", None)
+                use_download_trace = self.trace_html and callable(push_trace) and callable(clear_trace)
+
                 if use_download_trace:
-                    clear_trace()
+                    push_trace(
+                        {
+                            "identifier": normalized_identifier,
+                            "source": source or "unknown_source",
+                            "phase": "download",
+                            "candidate_index": index,
+                            "candidate_total": len(download_candidates),
+                        },
+                        html_snapshot_callback=_collect_html_snapshot,
+                    )
+                try:
+                    try:
+                        success, error_msg = self.downloader.download_file(
+                            candidate_url,
+                            output_path,
+                            progress_callback=_handle_progress if progress_callback else None,
+                        )
+                    except Exception as e:
+                        success = False
+                        error_msg = str(e)
+                        logger.warning(
+                            "Download failed for candidate URL %s: %s", candidate_url, e
+                        )
+                finally:
+                    if use_download_trace:
+                        clear_trace()
+                if success:
+                    if self.file_manager.validate_file(output_path):
+                        download_url = candidate_url
+                        break
+
+                    error_msg = "Downloaded file validation failed"
+                    logger.error(error_msg)
+                    if os.path.exists(output_path):
+                        os.unlink(output_path)
+                    success = False
+
+                if "sci-hub" in candidate_url.lower():
+                    logger.warning("Sci-Hub download failed, invalidating mirror cache")
+                    scihub = [
+                        s for s in self.source_manager.sources.values() if s.name == "Sci-Hub"
+                    ]
+                    if scihub:
+                        scihub[0].mirror_manager.invalidate_cache()
+
+                attempted_errors.append((candidate_url, error_msg or "Download failed"))
+
             if success:
-                if self.file_manager.validate_file(output_path):
-                    download_url = candidate_url
-                    break
+                break
 
-                error_msg = "Downloaded file validation failed"
-                logger.error(error_msg)
-                if os.path.exists(output_path):
-                    os.unlink(output_path)
-                success = False
+            if (
+                fallback_round >= max_fallback_rounds
+                or not self.fast_fail
+                or not self._should_retry_sources_after_download_failure(error_msg or "")
+            ):
+                break
 
-            if "sci-hub" in candidate_url.lower():
-                logger.warning("Sci-Hub download failed, invalidating mirror cache")
-                scihub = [s for s in self.source_manager.sources.values() if s.name == "Sci-Hub"]
-                if scihub:
-                    scihub[0].mirror_manager.invalidate_cache()
+            retry_identifier = self._select_retry_identifier(normalized_identifier, metadata)
+            if not self._is_retryable_identifier(retry_identifier):
+                break
 
-            attempted_errors.append((candidate_url, error_msg or "Download failed"))
+            if source:
+                attempted_sources.add(source)
+
+            fallback_round += 1
+            logger.info(
+                f"Retrying sources after download failure (round {fallback_round}/{max_fallback_rounds})"
+            )
+            download_url, metadata, source, retry_attempts = (
+                self.source_manager.get_pdf_url_with_metadata_and_trace(
+                    retry_identifier,
+                    html_snapshot_callback=_collect_html_snapshot if self.trace_html else None,
+                    exclude_sources=attempted_sources if attempted_sources else None,
+                    force_sequential=True,
+                )
+            )
+            if not download_url:
+                break
+            if retry_attempts:
+                if source_attempts:
+                    source_attempts.extend(retry_attempts)
+                else:
+                    source_attempts = retry_attempts
 
         if progress_callback:
             progress_callback(
@@ -536,6 +662,7 @@ class SciHubClient:
         primary_url: str,
         source: str | None,
         metadata: dict[str, Any] | None,
+        source_attempts: list[dict[str, Any]] | None = None,
     ) -> list[str]:
         """
         Collect candidate URLs for final file download.
@@ -557,6 +684,12 @@ class SciHubClient:
         _add(primary_url)
         if isinstance(metadata, dict):
             _add(metadata.get("pdf_url"))
+        if source_attempts:
+            for attempt in source_attempts:
+                if not isinstance(attempt, dict):
+                    continue
+                candidate = attempt.get("pdf_url")
+                _add(candidate)
 
         if source == "CORE" and isinstance(metadata, dict):
             for key in ("source_fulltext_urls", "links_download_urls"):
@@ -576,6 +709,7 @@ class SciHubClient:
         for candidate in self._derive_pmc_fallback_download_candidates(
             primary_url=primary_url,
             source=source,
+            fast_fail=self.fast_fail,
         ):
             _add(candidate)
 
@@ -610,28 +744,35 @@ class SciHubClient:
             )
         else:
             cleaned = _sanitize(cleaned)
-        parsed = urlparse(cleaned)
+        try:
+            parsed = urlparse(cleaned)
+        except ValueError:
+            return None
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return None
         return cleaned
 
     @staticmethod
     def _derive_pmc_fallback_download_candidates(
-        *, primary_url: str, source: str | None
+        *, primary_url: str, source: str | None, fast_fail: bool = False
     ) -> list[str]:
         """
         Derive alternate PMC download endpoints for challenge-prone PMC PDF links.
         """
-        parsed = urlparse(primary_url.strip())
+        try:
+            parsed = urlparse(primary_url.strip())
+        except ValueError:
+            return []
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return []
 
         host = parsed.netloc.lower()
         source_name = (source or "").strip().lower()
         if (
-            source_name != "pmc"
+            source_name not in {"pmc", "europe pmc", "europe pmc oa"}
             and "pmc.ncbi.nlm.nih.gov" not in host
             and "ncbi.nlm.nih.gov" not in host
+            and "europepmc.org" not in host
         ):
             return []
 
@@ -640,10 +781,13 @@ class SciHubClient:
             return []
         pmc_id = match.group(1).upper()
 
-        return [
+        candidates = [
             f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf",
             f"https://europepmc.org/articles/{pmc_id}?pdf=render",
         ]
+        if fast_fail:
+            return candidates[:1]
+        return candidates
 
     def _convert_pdf_to_markdown(self, pdf_path: str) -> tuple[str | None, bool | None, str | None]:
         from .converters.pdf_to_md import MarkdownConvertOptions
@@ -721,39 +865,50 @@ class SciHubClient:
             logger.error(f"Error reading input file: {e}")
             return []
 
-        # Filter out comments and empty lines
-        raw_identifiers = [
-            line.strip() for line in lines if line.strip() and not line.strip().startswith("#")
-        ]
+        # Filter out comments and empty lines, and extract clean identifiers.
+        extracted_entries: list[tuple[str, str]] = []
+        for line in lines:
+            raw_line = (line or "").strip()
+            if not raw_line or raw_line.startswith("#"):
+                continue
+            extracted = self._extract_identifier_from_line(raw_line)
+            if not extracted:
+                continue
+            extracted_entries.append((raw_line, extracted))
+
+        raw_identifiers = [entry[1] for entry in extracted_entries]
         if self.academic_only:
-            total_before_filter = len(raw_identifiers)
-            raw_identifiers = [
-                identifier
-                for identifier in raw_identifiers
+            total_before_filter = len(extracted_entries)
+            extracted_entries = [
+                (original, identifier)
+                for original, identifier in extracted_entries
                 if self._is_probably_academic_identifier(identifier)
             ]
-            dropped = total_before_filter - len(raw_identifiers)
+            dropped = total_before_filter - len(extracted_entries)
             logger.info(
                 "Academic-only filter enabled: kept %s/%s identifiers (dropped %s non-academic URLs)",
-                len(raw_identifiers),
+                len(extracted_entries),
                 total_before_filter,
                 dropped,
             )
+            raw_identifiers = [entry[1] for entry in extracted_entries]
 
-        normalized_groups: dict[str, list[tuple[int, str, str]]] = {}
-        for index, identifier in enumerate(raw_identifiers):
+        normalized_groups: dict[str, list[tuple[int, str, str, str]]] = {}
+        for index, (original_identifier, identifier) in enumerate(extracted_entries):
             normalized = self.doi_processor.normalize_doi(identifier)
-            normalized_groups.setdefault(normalized, []).append((index, identifier, normalized))
+            normalized_groups.setdefault(normalized, []).append(
+                (index, original_identifier, identifier, normalized)
+            )
 
-        tasks: list[tuple[str, str, list[tuple[int, str, str]]]] = []
+        tasks: list[tuple[str, str, list[tuple[int, str, str, str]]]] = []
         for dedupe_key, entries in normalized_groups.items():
-            variants = [identifier for _, identifier, _normalized in entries]
+            variants = [cleaned_identifier for _, _original, cleaned_identifier, _normalized in entries]
             representative = self._select_best_identifier_variant(variants)
             tasks.append((dedupe_key, representative, entries))
 
         logger.info(
             "Found %s papers to download (%s unique after normalization)",
-            len(raw_identifiers),
+            len(extracted_entries),
             len(tasks),
         )
 
@@ -792,10 +947,7 @@ class SciHubClient:
             base_result = unique_results[task_index]
             if base_result is None:
                 continue
-            for original_index, original_identifier, original_normalized in entries:
-                if base_result.identifier == original_identifier:
-                    results[original_index] = base_result
-                    continue
+            for original_index, original_identifier, _cleaned_identifier, original_normalized in entries:
                 results[original_index] = replace(
                     base_result,
                     identifier=original_identifier,
@@ -835,6 +987,24 @@ class SciHubClient:
         ):
             return False
 
+        path = (parsed.path or "").lower()
+        if path.endswith(
+            (
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".svg",
+                ".webp",
+                ".mp4",
+                ".mp3",
+                ".css",
+                ".js",
+                ".ico",
+            )
+        ):
+            return False
+
         if host.endswith(".edu") or host.endswith(".gov") or ".ac." in host:
             return True
         if any(marker in host for marker in FileDownloader._ACADEMIC_HOST_MARKERS):
@@ -842,15 +1012,236 @@ class SciHubClient:
         if any(hint in host for hint in SciHubClient._ACADEMIC_HOST_HINTS):
             return True
 
-        path_query = f"{(parsed.path or '').lower()}?{(parsed.query or '').lower()}"
+        path_query = f"{path}?{(parsed.query or '').lower()}"
         if any(hint in path_query for hint in SciHubClient._ACADEMIC_PATH_HINTS):
             return True
         if re.search(r"10\\.[0-9]{4,9}/[-._;()/:a-z0-9]+", path_query, flags=re.I):
             return True
 
-        # Keep unknown-but-not-obviously-non-academic hosts to avoid dropping
-        # legitimate institutional repositories with unusual domains.
-        return True
+        # Unknown hosts without academic signals are treated as non-academic when
+        # academic-only filtering is enabled.
+        return False
+
+    @staticmethod
+    def _extract_identifier_from_line(line: str) -> str | None:
+        if not line:
+            return None
+
+        cleaned = line.strip()
+        if not cleaned:
+            return None
+
+        # Handle tab-delimited logs: take the last non-empty field.
+        if "\t" in cleaned:
+            parts = [part.strip() for part in cleaned.split("\t") if part.strip()]
+            if parts:
+                cleaned = parts[-1]
+
+        # Drop trailing status markers like "[failed:2]" or "[success:1]".
+        cleaned = re.sub(r"\s*\[[^\]]+\]\s*$", "", cleaned).strip()
+
+        # Handle space-delimited status tokens (e.g., "... success <doi>").
+        tokens = cleaned.split()
+        if len(tokens) >= 3 and tokens[-2].lower() in {"success", "failed", "skipped"}:
+            cleaned = tokens[-1]
+
+        # Prefer explicit PDF URLs when present.
+        pdf_url_match = re.search(r"https?://[^\s\"'<>]+?\.pdf(?:\?[^\s\"'<>]+)?", cleaned)
+        if pdf_url_match:
+            cleaned = pdf_url_match.group(0)
+        else:
+            # Prefer DOI tokens when embedded in noisy lines.
+            doi_match = re.search(DOIProcessor.DOI_PATTERN, cleaned, flags=re.IGNORECASE)
+            if doi_match:
+                cleaned = DOIProcessor._clean_doi_candidate(doi_match.group(0))
+            else:
+                # arXiv identifiers commonly appear without scheme.
+                arxiv_match = re.search(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b", cleaned)
+                if arxiv_match:
+                    cleaned = arxiv_match.group(0)
+                else:
+                    # If a URL is embedded in the line, prefer the first URL token.
+                    url_tokens = DOIProcessor._URL_TOKEN_PATTERN.findall(cleaned)
+                    if url_tokens:
+                        if len(url_tokens) > 1:
+                            cleaned = DOIProcessor._select_primary_url_token(cleaned).strip()
+                        else:
+                            cleaned = url_tokens[0].strip()
+
+        cleaned = DOIProcessor._strip_trailing_noise(cleaned).strip(")];,")
+        cleaned = cleaned.strip("[]()<>\"'")
+        if cleaned.lower().startswith("10.") and cleaned.lower().endswith(".pdf"):
+            cleaned = cleaned[:-4]
+        if cleaned.lower().startswith("10.") and cleaned.endswith("&"):
+            cleaned = cleaned[:-1]
+        return cleaned.strip() or None
+
+    @staticmethod
+    def _should_fast_fail_url(identifier: str, normalized_identifier: str) -> bool:
+        parsed = urlparse(normalized_identifier or "")
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+
+        path = (parsed.path or "").lower()
+        if path.endswith(
+            (
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".svg",
+                ".webp",
+                ".mp4",
+                ".mp3",
+                ".css",
+                ".js",
+                ".ico",
+            )
+        ):
+            return True
+
+        if re.search(DOIProcessor.DOI_PATTERN, normalized_identifier, flags=re.IGNORECASE):
+            return False
+
+        if path.endswith(".pdf"):
+            return False
+
+        if host.endswith("mdpi.com"):
+            mdpi_non_paper_prefixes = (
+                "/topics",
+                "/topic",
+                "/journal/",
+                "/special_issues",
+                "/topical_advisory_panel",
+                "/about",
+                "/editors",
+                "/authors",
+                "/user/",
+                "/institutional",
+                "/news",
+                "/events",
+                "/search",
+                "/susy",
+            )
+            if path == "/topics" or path.startswith(mdpi_non_paper_prefixes):
+                return True
+
+        if "sciencedirect.com" in host and "/craft/" in path:
+            return True
+
+        fast_fail_hosts = {
+            "researchgate.net",
+            "www.researchgate.net",
+            "academia.edu",
+            "www.academia.edu",
+            "sk.sagepub.com",
+            "www.sk.sagepub.com",
+            "susy.mdpi.com",
+            "www.susy.mdpi.com",
+        }
+        return host in fast_fail_hosts
+
+    @staticmethod
+    def _should_retry_sources_after_download_failure(error_msg: str) -> bool:
+        lowered = (error_msg or "").lower()
+        if not lowered:
+            return False
+        if "skipped non-academic" in lowered:
+            return False
+        return any(
+            token in lowered
+            for token in (
+                "access denied",
+                "403",
+                "html instead of pdf",
+                "html response",
+                "challenge",
+                "captcha",
+                "cloudflare",
+                "blocked",
+                "skipped challenge-heavy pdf url",
+            )
+        )
+
+    @staticmethod
+    def _is_retryable_identifier(identifier: str) -> bool:
+        if not identifier:
+            return False
+        lowered = identifier.lower()
+        if lowered.startswith("10."):
+            return True
+        if lowered.startswith("arxiv:"):
+            return True
+        # arXiv bare identifiers
+        if re.fullmatch(r"\d{4}\.\d{4,5}(?:v\d+)?", identifier):
+            return True
+        return False
+
+    @staticmethod
+    def _select_retry_identifier(
+        normalized_identifier: str, metadata: dict[str, Any] | None
+    ) -> str:
+        if isinstance(metadata, dict):
+            for key in ("doi", "DOI"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value.startswith("10."):
+                    return value.strip()
+        return normalized_identifier
+
+    def _resolve_sciencedirect_pii_to_doi(self, identifier: str) -> str | None:
+        parsed = urlparse(identifier or "")
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
+        host = parsed.netloc.lower()
+        if "sciencedirect.com" not in host:
+            return None
+
+        pii_match = re.search(r"/pii/([A-Z0-9]+)", parsed.path, flags=re.I)
+        if not pii_match:
+            return None
+        pii = pii_match.group(1).upper()
+        if pii in self._pii_doi_cache:
+            return self._pii_doi_cache[pii]
+
+        try:
+            params = {"filter": f"alternative-id:{pii}", "rows": 1}
+            headers = {}
+            if self.email:
+                headers["User-Agent"] = f"scihub-cli/1.0 (mailto:{self.email})"
+            response = self.downloader.session.get(
+                "https://api.crossref.org/works",
+                params=params,
+                headers=headers,
+                timeout=min(5, self.timeout),
+            )
+            if response.status_code == 429:
+                logger.info("[Crossref] Rate limited during PII resolve; skipping cache")
+                return None
+            if response.status_code != 200:
+                self._pii_doi_cache[pii] = None
+                return None
+            payload = response.json()
+            items = (payload.get("message") or {}).get("items") or []
+            if not items:
+                self._pii_doi_cache[pii] = None
+                return None
+            doi = items[0].get("DOI") if isinstance(items[0], dict) else None
+            if not isinstance(doi, str):
+                self._pii_doi_cache[pii] = None
+                return None
+            doi = DOIProcessor._clean_doi_candidate(doi)
+            if DOIProcessor._is_valid_doi(doi):
+                self._pii_doi_cache[pii] = doi
+                return doi
+        except Exception as e:
+            logger.debug(f"Failed to resolve PII via Crossref: {e}")
+
+        self._pii_doi_cache[pii] = None
+        return None
 
     @staticmethod
     def _select_best_identifier_variant(variants: list[str]) -> str:

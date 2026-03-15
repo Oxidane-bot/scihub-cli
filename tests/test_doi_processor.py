@@ -64,3 +64,8 @@ def test_normalize_non_doi_url_canonicalizes_noise():
 def test_normalize_non_doi_url_strips_fragment_tail_noise():
     raw = "https://pmc.ncbi.nlm.nih.gov/articles/PMC11021330/#}["
     assert DOIProcessor.normalize_doi(raw) == "https://pmc.ncbi.nlm.nih.gov/articles/PMC11021330"
+
+
+def test_normalize_crossref_api_works_url_to_doi():
+    raw = "https://api.crossref.org/works/10.1007%2Fs10584-018-2272-5"
+    assert DOIProcessor.normalize_doi(raw) == "10.1007/s10584-018-2272-5"

@@ -233,6 +233,64 @@ def derive_publisher_pdf_candidates(base_url: str, html: str | None = None) -> l
     return [url for url, _score in _extract_publisher_candidates(base_url, html_unescaped)]
 
 
+def should_try_html_landing(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return 0
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    host = parsed.netloc.lower()
+    heavy_skip = (
+        "mdpi.com",
+        "wiley.com",
+        "onlinelibrary.wiley.com",
+        "springer.com",
+        "link.springer.com",
+        "nature.com",
+        "tandfonline.com",
+        "sagepub.com",
+        "journals.sagepub.com",
+        "ieeexplore.ieee.org",
+        "ssrn.com",
+        "papers.ssrn.com",
+        "doi.org",
+        "dx.doi.org",
+    )
+    if any(marker in host for marker in heavy_skip):
+        return False
+    hints = (
+        "repository",
+        "repo",
+        "eprints",
+        "dspace",
+        "pure",
+        "cris",
+        "digitalcommons",
+        "escholarship",
+        "ojs",
+        "journals",
+        "library",
+        "archive",
+        "university",
+        "institute",
+        "bibl",
+        "handle.net",
+        "zenodo.org",
+        "osf.io",
+        "figshare.com",
+        "biorxiv.org",
+        "medrxiv.org",
+    )
+    if any(hint in host for hint in hints):
+        return True
+    if host.endswith(".edu") or ".ac." in host:
+        return True
+    return False
+
+
 def _score_url(url: str) -> int:
     if not url:
         return 0
@@ -241,7 +299,10 @@ def _score_url(url: str) -> int:
     if url_lower.startswith(_SKIP_SCHEMES):
         return 0
 
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return 0
     host = parsed.netloc.lower()
     if any(marker in host for marker in _TRACKER_HOST_MARKERS):
         return 0
@@ -280,6 +341,12 @@ def _score_url(url: str) -> int:
         score += 850
     if "tandfonline.com/doi/pdf/" in url_lower:
         score += 850
+    if "onlinelibrary.wiley.com/doi/pdf/" in url_lower or "onlinelibrary.wiley.com/doi/epdf/" in url_lower:
+        score += 800
+    if "link.springer.com/content/pdf/" in url_lower and url_lower.endswith(".pdf"):
+        score += 900
+    if "journals.sagepub.com/doi/pdf" in url_lower or "journals.sagepub.com/doi/pdfplus" in url_lower:
+        score += 800
     if "mdpi.com/" in url_lower and "/pdf" in url_lower:
         score += 700
     if host.endswith(".edu") or ".ac." in host or host.endswith(".gov"):
@@ -394,11 +461,56 @@ def _extract_publisher_candidates(base_url: str, html_unescaped: str = "") -> li
             doi = m.group(1).lstrip("/")
             out.append((f"https://www.tandfonline.com/doi/pdf/{doi}", 1050))
 
+    # Wiley (onlinelibrary.wiley.com).
+    if "onlinelibrary.wiley.com" in host:
+        m = re.search(r"/doi/(?:full|abs|pdf|epdf|pdfdirect)/([^?#]+)", path, re.I)
+        if not m:
+            m = re.search(r"/doi/([^?#]+)", path, re.I)
+        if m:
+            doi = m.group(1).strip("/")
+            if doi.startswith("10."):
+                out.append((f"https://onlinelibrary.wiley.com/doi/pdf/{doi}", 1030))
+                out.append((f"https://onlinelibrary.wiley.com/doi/epdf/{doi}", 1020))
+
+    # Springer (link.springer.com).
+    if "link.springer.com" in host:
+        m = re.search(r"/(?:article|chapter|book)/([^?#]+)", path, re.I)
+        if m:
+            doi = m.group(1).strip("/")
+            if doi.startswith("10."):
+                out.append((f"https://link.springer.com/content/pdf/{doi}.pdf", 1040))
+
+    # SAGE journals.
+    if "journals.sagepub.com" in host:
+        m = re.search(r"/doi/(?:abs|full|pdf|pdfplus)/([^?#]+)", path, re.I)
+        if not m:
+            m = re.search(r"/doi/([^?#]+)", path, re.I)
+        if m:
+            doi = m.group(1).strip("/")
+            if doi.startswith("10."):
+                out.append((f"https://journals.sagepub.com/doi/pdf/{doi}", 1020))
+                out.append((f"https://journals.sagepub.com/doi/pdfplus/{doi}", 1010))
+
     # MDPI article pages.
     if "mdpi.com" in host:
         normalized_path = _normalize_mdpi_article_path(parsed.path, parsed.query)
         if normalized_path:
             out.append((f"https://www.mdpi.com{normalized_path}/pdf", 980))
+
+    # SSRN landing pages.
+    if "ssrn.com" in host:
+        query_params = parse_qs(parsed.query or "")
+        abstract_id = (
+            (query_params.get("abstractid") or query_params.get("abstract_id") or [None])[0]
+        )
+        if not abstract_id:
+            m = re.search(r"/abstract=([0-9]+)", path, re.I)
+            if m:
+                abstract_id = m.group(1)
+        if abstract_id:
+            base = f"https://papers.ssrn.com/sol3/Delivery.cfm?abstractid={abstract_id}"
+            out.append((base, 900))
+            out.append((f"{base}&type=2", 940))
 
     # arXiv HTML landing pages.
     if "arxiv.org" in host:

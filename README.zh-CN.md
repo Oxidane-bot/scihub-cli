@@ -1,6 +1,6 @@
 # Sci-Hub CLI
 
-支持多数据源的学术论文批量下载工具 (OpenAlex、Sci-Hub、Unpaywall、arXiv、CORE)
+支持多数据源的学术论文批量下载工具 (OpenAlex、Europe PMC、Sci-Hub、Unpaywall、arXiv、CORE)
 
 *其他语言版本: [English](README.md), [简体中文](README.zh-CN.md)*
 
@@ -8,6 +8,7 @@
 
 - **多数据源支持**: 智能路由多个下载源
   - **OpenAlex**: 开放获取元数据与全文链接发现（无需邮箱）
+  - **Europe PMC**: 生物医学 OA 全文链接（无需邮箱）
   - **arXiv**: 预印本优先 (免费,无需 API key)
   - **Unpaywall**: 开放获取论文 (需要邮箱)
   - **Sci-Hub**: 历史论文备选源 (覆盖率高但更慢)
@@ -40,6 +41,7 @@
 - `--academic-only` 改为默认开启：下载前过滤明显非学术链接
 - 增强 URL 规范化与去重：自动清理追踪参数、fragment、`www` 变体等噪声
 - 集成 OpenAlex 来源并优化 OA 优先路由
+- 新增 Europe PMC OA 来源（生物医学 OA 覆盖，无需邮箱）
 - 优化 fast-fail：对挑战页/付费墙页更快失败，减少无效重试
 - 增强 PMC 回退：当 PMC PDF 链接返回 HTML 时，自动尝试 EuropePMC 渲染端点
 - 默认并发提升为 `16`，在大批量下载下取得更好的速度/成功率平衡

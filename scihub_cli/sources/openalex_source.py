@@ -5,8 +5,10 @@ OpenAlex source implementation.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from ..utils.logging import get_logger
 from ..utils.retry import (
@@ -15,6 +17,7 @@ from ..utils.retry import (
     RetryableError,
     retry_with_classification,
 )
+from ..core.pdf_link_extractor import derive_publisher_pdf_candidates, should_try_html_landing
 from .base import PaperSource
 
 logger = get_logger(__name__)
@@ -22,6 +25,14 @@ logger = get_logger(__name__)
 
 class OpenAlexSource(PaperSource):
     """OpenAlex open-access source."""
+
+    _FAST_FAIL_SKIP_PDF_HOSTS = (
+        "sciencedirect.com",
+        "onlinelibrary.wiley.com",
+        "tandfonline.com",
+        "academic.oup.com",
+        "scispace.com",
+    )
 
     def __init__(
         self,
@@ -37,7 +48,11 @@ class OpenAlexSource(PaperSource):
         self.api_key = (api_key or "").strip() or None
         self.base_url = "https://api.openalex.org/works"
         self.session = requests.Session()
+        self.session.trust_env = False
         self.session.headers.update({"User-Agent": "scihub-cli/1.0 (OpenAlex OA lookup)"})
+        adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
         # Metadata caching
         self._metadata_cache: dict[str, dict[str, Any] | None] = {}
@@ -65,12 +80,28 @@ class OpenAlexSource(PaperSource):
             return None
         pdf_url = metadata.get("pdf_url")
         if pdf_url:
+            if self._should_skip_pdf_url(pdf_url):
+                logger.info(f"[OpenAlex] Fast-fail skip challenge-heavy PDF URL: {pdf_url}")
+                return None
             oa_status = metadata.get("oa_status", "unknown")
             logger.info(f"[OpenAlex] Found OA paper (status: {oa_status}): {doi}")
             logger.debug(f"[OpenAlex] PDF URL: {pdf_url}")
             return pdf_url
         logger.warning(f"[OpenAlex] No direct PDF URL for {doi}")
         return None
+
+    def _should_skip_pdf_url(self, pdf_url: str) -> bool:
+        if not self.fast_fail or not pdf_url:
+            return False
+        parsed = urlparse(pdf_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        host = parsed.netloc.lower()
+        if not any(marker in host for marker in self._FAST_FAIL_SKIP_PDF_HOSTS):
+            return False
+        path = (parsed.path or "").lower()
+        query = (parsed.query or "").lower()
+        return path.endswith(".pdf") or ".pdf" in query or "/pdf" in path or "pdfft" in path
 
     def get_metadata(self, doi: str) -> dict[str, Any] | None:
         return self._fetch_metadata(doi)
@@ -129,11 +160,18 @@ class OpenAlexSource(PaperSource):
                 oa_status = open_access.get("oa_status") or ""
 
                 best_oa = work.get("best_oa_location") or {}
+                landing_candidates: list[str] = []
                 pdf_url = best_oa.get("pdf_url")
+                if pdf_url and not self._looks_like_pdf_url(pdf_url):
+                    landing_candidates.append(pdf_url)
+                    pdf_url = None
                 if not pdf_url:
                     oa_url = open_access.get("oa_url")
-                    if oa_url and self._looks_like_pdf_url(oa_url):
-                        pdf_url = oa_url
+                    if oa_url:
+                        if self._looks_like_pdf_url(oa_url):
+                            pdf_url = oa_url
+                        else:
+                            landing_candidates.append(oa_url)
 
                 if not pdf_url:
                     locations = work.get("locations") or []
@@ -142,17 +180,47 @@ class OpenAlexSource(PaperSource):
                             if not isinstance(loc, dict):
                                 continue
                             candidate = loc.get("pdf_url")
-                            if candidate:
+                            if candidate and self._looks_like_pdf_url(candidate):
                                 pdf_url = candidate
                                 break
                             landing = loc.get("landing_page_url")
-                            if landing and self._looks_like_pdf_url(landing):
-                                pdf_url = landing
-                                break
+                            if landing:
+                                if self._looks_like_pdf_url(landing):
+                                    pdf_url = landing
+                                    break
+                                landing_candidates.append(landing)
 
                 primary_location = work.get("primary_location") or {}
                 source = primary_location.get("source") or {}
                 year = work.get("publication_year")
+                if not pdf_url and is_oa:
+                    for landing in (
+                        best_oa.get("landing_page_url"),
+                        best_oa.get("url"),
+                        primary_location.get("landing_page_url"),
+                    ):
+                        if landing:
+                            landing_candidates.append(landing)
+                    if isinstance(locations, list):
+                        for loc in locations:
+                            if not isinstance(loc, dict):
+                                continue
+                            landing = loc.get("landing_page_url")
+                            if landing:
+                                landing_candidates.append(landing)
+                    derived = self._derive_pdf_from_landing_urls(landing_candidates)
+                    if derived:
+                        if self._should_skip_pdf_url(derived):
+                            logger.info(
+                                f"[OpenAlex] Fast-fail skip derived PDF candidate: {derived}"
+                            )
+                        else:
+                            pdf_url = derived
+                if not pdf_url and is_oa:
+                    for landing in landing_candidates:
+                        if should_try_html_landing(landing):
+                            pdf_url = landing
+                            break
                 return {
                     "title": work.get("title") or work.get("display_name") or "",
                     "year": int(year) if year else None,
@@ -204,3 +272,27 @@ class OpenAlexSource(PaperSource):
             token in lowered
             for token in ("/pdf", "/download/", "blobtype=pdf", "content/pdf", "/article-pdf/")
         )
+
+    @staticmethod
+    def _derive_pdf_from_landing_url(landing_url: str | None) -> str | None:
+        if not landing_url:
+            return None
+        candidates = derive_publisher_pdf_candidates(landing_url)
+        if not candidates:
+            return None
+        return candidates[0]
+
+    @classmethod
+    def _derive_pdf_from_landing_urls(cls, landing_urls: list[str]) -> str | None:
+        seen: set[str] = set()
+        for url in landing_urls:
+            if not url:
+                continue
+            cleaned = url.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            derived = cls._derive_pdf_from_landing_url(cleaned)
+            if derived:
+                return derived
+        return None

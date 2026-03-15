@@ -18,12 +18,22 @@ class ContentParser:
     """Handles HTML parsing and URL extraction."""
 
     _FALLBACK_MIN_SCORE = 850
+    _SCIHUB_BLOCK_TOKENS = (
+        "scientific mutual aid community",
+        "you can request this article",
+        "no matching proxies found",
+        "please try searching the corresponding doi again",
+        "you can close this page and check later if the article has been downloaded",
+    )
 
     def __init__(self):
         pass
 
     def extract_download_url(self, html_content: str, base_mirror: str) -> Optional[str]:
         """Extract the PDF download URL from Sci-Hub HTML."""
+        if self._looks_like_scihub_block_page(html_content):
+            logger.warning("Detected Sci-Hub block page; no PDF available")
+            return None
         soup = BeautifulSoup(html_content, "html.parser")
 
         # Look for the download button (onclick attribute)
@@ -113,6 +123,13 @@ class ContentParser:
 
         logger.warning("Could not find download URL in HTML")
         return None
+
+    @classmethod
+    def _looks_like_scihub_block_page(cls, html_content: str) -> bool:
+        if not html_content:
+            return False
+        lowered = html_content.lower()
+        return any(token in lowered for token in cls._SCIHUB_BLOCK_TOKENS)
 
     def _fix_url_format(self, url: str, mirror: str) -> str:
         """Fix common URL formatting issues."""

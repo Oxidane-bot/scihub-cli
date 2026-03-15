@@ -10,6 +10,7 @@ import requests
 
 from ..config.mirrors import MirrorConfig
 from ..config.settings import settings
+from ..core.parser import ContentParser
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -209,8 +210,16 @@ class MirrorManager:
     def _test_mirror(self, mirror: str, allow_403: bool = False) -> bool:
         """Test if a mirror is accessible (uses short timeout)."""
         try:
-            response = requests.get(mirror, timeout=MIRROR_TEST_TIMEOUT, headers=self._headers)
+            response = requests.get(
+                mirror,
+                timeout=MIRROR_TEST_TIMEOUT,
+                headers=self._headers,
+                proxies={"http": None, "https": None},
+            )
             if response.status_code == 200:
+                if ContentParser._looks_like_scihub_block_page(response.text):
+                    logger.warning(f"BLOCKED: {mirror} returned a non-PDF Sci-Hub block page")
+                    return False
                 return True
             elif response.status_code == 403 and allow_403:
                 logger.warning(

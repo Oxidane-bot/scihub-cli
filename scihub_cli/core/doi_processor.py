@@ -51,6 +51,10 @@ class DOIProcessor:
         parsed = urlparse(identifier)
         if parsed.netloc:
             path = parsed.path
+            if cls._is_crossref_api_host(parsed.netloc):
+                doi_candidate = cls._extract_doi_from_crossref_api_path(path)
+                if cls._is_valid_doi(doi_candidate):
+                    return doi_candidate
             # Extract DOI from common URL patterns
             if cls._is_doi_host(parsed.netloc):
                 doi_candidate = cls._extract_doi_from_doi_url(path)
@@ -103,6 +107,13 @@ class DOIProcessor:
         return lowered in cls._DOI_HOSTS
 
     @classmethod
+    def _is_crossref_api_host(cls, host: str) -> bool:
+        lowered = (host or "").lower()
+        if lowered.startswith("www."):
+            lowered = lowered[4:]
+        return lowered == "api.crossref.org"
+
+    @classmethod
     def _select_primary_url_token(cls, raw: str) -> str:
         if not raw:
             return raw
@@ -133,6 +144,14 @@ class DOIProcessor:
             return candidate
         extracted = cls._clean_doi_candidate(match.group(0))
         return extracted
+
+    @classmethod
+    def _extract_doi_from_crossref_api_path(cls, path: str) -> str:
+        decoded = unquote(path or "").strip("/")
+        if not decoded:
+            return decoded
+        candidate = decoded.split("/", 1)[1] if decoded.lower().startswith("works/") else decoded
+        return cls._clean_doi_candidate(candidate)
 
     @classmethod
     def _canonicalize_url_identifier(cls, value: str) -> str:
