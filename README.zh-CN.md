@@ -295,6 +295,12 @@ uvx scihub-cli papers.txt
 
 此工具仅供教育和研究目的使用。用户负责确保其使用符合适用的法律法规。
 
+## Longrun 基准迭代
+
+关于基于 HTML 快照的长跑优化与自动调参，请参考：
+
+- `docs/longrun_benchmark.md`
+
 ## 测试
 
 项目包含全面的测试以确保功能正常工作：

@@ -350,6 +350,12 @@ The tool automatically adapts HTTP headers for different publishers:
 
 This tool is provided for educational and research purposes only. Users are responsible for ensuring they comply with applicable laws and regulations when using this tool.
 
+## Longrun Benchmarking
+
+For iterative optimization runs that analyze HTML failure snapshots and auto-tune host rules, see:
+
+- `docs/longrun_benchmark.md`
+
 ## Testing
 
 The project includes comprehensive tests for multi-source functionality:

@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 import requests
 
 from ..config.settings import settings
+from ..config.auto_tuning import load_auto_tuning, _merge_domain_list
 from ..network.session import BasicSession
 from ..utils.logging import get_logger
 from ..utils.retry import (
@@ -90,6 +91,9 @@ class FileDownloader:
         "onlinelibrary.wiley.com",
         "asmedigitalcollection.asme.org",
         "durham-repository.worktribe.com",
+    )
+    _FAST_FAIL_PAGE_BYPASS_SCIHUB_MARKERS = (
+        "sci-hub.",
     )
     _FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS = (
         "academia.edu",
@@ -251,6 +255,40 @@ class FileDownloader:
         self._fast_fail_html_recovery_min_score = 1000
         self._fast_fail_html_recovery_max_candidates = 3
 
+        # Auto-tuning: merge per-run domain overrides into host lists.
+        rules = load_auto_tuning()
+        if isinstance(rules, dict):
+            self.__class__._FAST_FAIL_LIGHTWEIGHT_BYPASS_HOSTS = _merge_domain_list(
+                self._FAST_FAIL_LIGHTWEIGHT_BYPASS_HOSTS,
+                add=rules.get("fast_fail_lightweight_bypass_hosts_add"),
+                drop=rules.get("fast_fail_lightweight_bypass_hosts_drop"),
+            )
+            self.__class__._FAST_FAIL_SKIP_CHALLENGE_DOWNLOAD_HOSTS = _merge_domain_list(
+                self._FAST_FAIL_SKIP_CHALLENGE_DOWNLOAD_HOSTS,
+                add=rules.get("fast_fail_skip_challenge_download_hosts_add"),
+                drop=rules.get("fast_fail_skip_challenge_download_hosts_drop"),
+            )
+            self.__class__._FAST_FAIL_PAGE_BYPASS_HOSTS = _merge_domain_list(
+                self._FAST_FAIL_PAGE_BYPASS_HOSTS,
+                add=rules.get("fast_fail_page_bypass_hosts_add"),
+                drop=rules.get("fast_fail_page_bypass_hosts_drop"),
+            )
+            self.__class__._FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS = _merge_domain_list(
+                self._FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS,
+                add=rules.get("fast_fail_skip_page_bypass_hosts_add"),
+                drop=rules.get("fast_fail_skip_page_bypass_hosts_drop"),
+            )
+            self.__class__._ACADEMIC_HOST_MARKERS = _merge_domain_list(
+                self._ACADEMIC_HOST_MARKERS,
+                add=rules.get("academic_host_markers_add"),
+                drop=rules.get("academic_host_markers_drop"),
+            )
+            self.__class__._NON_ACADEMIC_HOST_MARKERS = _merge_domain_list(
+                self._NON_ACADEMIC_HOST_MARKERS,
+                add=rules.get("non_academic_host_markers_add"),
+                drop=rules.get("non_academic_host_markers_drop"),
+            )
+
     def push_trace_context(
         self,
         context: dict[str, Any],
@@ -306,6 +344,25 @@ class FileDownloader:
             callback(payload)
         except Exception as e:
             logger.debug(f"HTML snapshot callback failed: {e}")
+
+    @staticmethod
+    def _extract_html_for_snapshot(response: Any) -> str | None:
+        try:
+            content_type = (response.headers.get("Content-Type", "") or "").lower()
+        except Exception:
+            content_type = ""
+        try:
+            text = response.text if isinstance(response.text, str) else None
+        except Exception:
+            text = None
+        if not text:
+            return None
+        lowered = text.lower()
+        if "html" in content_type:
+            return text
+        if "<html" in lowered or "<!doctype" in lowered or "<body" in lowered:
+            return text
+        return None
 
     def download_file(
         self,
@@ -468,6 +525,31 @@ class FileDownloader:
                     return True, None
                 if fallback_error:
                     logger.debug(f"Fast-fail lightweight bypass failed: {fallback_error}")
+                html_events = self._collect_html_events_for_recovery()
+                if html_events:
+                    if self.fast_fail:
+                        recovered, recovery_error = self._try_fast_fail_html_recovery(
+                            output_path=output_path,
+                            progress_callback=progress_callback,
+                            html_events=html_events,
+                            visited_urls=visited_urls,
+                        )
+                        if recovered:
+                            return True, None
+                        if recovery_error:
+                            logger.debug(f"Fast-fail HTML recovery failed: {recovery_error}")
+                    elif _html_recovery_depth < self._html_recovery_max_depth:
+                        recovered, recovery_error = self._recover_from_html_candidates(
+                            output_path=output_path,
+                            progress_callback=progress_callback,
+                            html_events=html_events,
+                            visited_urls=visited_urls,
+                            next_depth=_html_recovery_depth + 1,
+                        )
+                        if recovered:
+                            return True, None
+                        if recovery_error:
+                            error_msg = f"{error_msg}. {recovery_error}"
                 logger.error(f"Download failed after all retries: {error_msg}")
                 return False, error_msg
         finally:
@@ -526,6 +608,10 @@ class FileDownloader:
 
         out: list[str] = []
 
+        if "/server/api/core/bitstreams/" in lowered_path or "/bitstreams/" in lowered_path:
+            if "/content" not in lowered_path:
+                out.append(urlunparse(parsed._replace(path=path.rstrip("/") + "/content", query="")))
+
         if "onlinelibrary.wiley.com" in host:
             if any(token in lowered_path for token in ("/doi/pdf", "/doi/epdf", "/doi/pdfdirect")):
                 return []
@@ -578,6 +664,22 @@ class FileDownloader:
                         f"{base}&type=2",
                         f"{base}&download=1",
                     ]
+                )
+
+        if "ncbi.nlm.nih.gov" in host or "pmc.ncbi.nlm.nih.gov" in host:
+            match = re.search(r"/pmc/articles/(pmc\\d+)", lowered_path)
+            if match:
+                pmc_id = match.group(1).upper()
+                out.append(
+                    f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf"
+                )
+
+        if "europepmc.org" in host and "/articles/pmc" in lowered_path:
+            match = re.search(r"/articles/(pmc\\d+)", lowered_path)
+            if match:
+                pmc_id = match.group(1).upper()
+                out.append(
+                    f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf"
                 )
 
         # Deduplicate while preserving order
@@ -745,7 +847,13 @@ class FileDownloader:
             return None
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return None
-        return urlunparse(parsed._replace(fragment=""))
+        cleaned_path = re.sub(r"(\\.pdf)+$", ".pdf", parsed.path or "", flags=re.I)
+        if cleaned_path:
+            lower = cleaned_path.lower()
+            idx = lower.find(".pdf")
+            if idx != -1:
+                cleaned_path = cleaned_path[: idx + 4]
+        return urlunparse(parsed._replace(path=cleaned_path, fragment=""))
 
     def _should_skip_html_recovery_event(self, event: dict[str, Any]) -> bool:
         url = event.get("url")
@@ -991,9 +1099,7 @@ class FileDownloader:
                 self._emit_html_snapshot(
                     url=url,
                     status_code=response.status_code,
-                    html=response.text
-                    if "html" in response.headers.get("Content-Type", "").lower()
-                    else None,
+                    html=self._extract_html_for_snapshot(response),
                     fetcher="requests",
                     error="HTTP 202",
                 )
@@ -1002,9 +1108,7 @@ class FileDownloader:
                 self._emit_html_snapshot(
                     url=url,
                     status_code=response.status_code,
-                    html=response.text
-                    if "html" in response.headers.get("Content-Type", "").lower()
-                    else None,
+                    html=self._extract_html_for_snapshot(response),
                     fetcher="requests",
                     error=f"HTTP {response.status_code}",
                 )
@@ -1793,12 +1897,15 @@ class FileDownloader:
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return False
         host = parsed.netloc.lower()
+        is_scihub = any(marker in host for marker in self._FAST_FAIL_PAGE_BYPASS_SCIHUB_MARKERS)
         if any(marker in host for marker in self._FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS):
             return False
-        if not any(marker in host for marker in self._FAST_FAIL_PAGE_BYPASS_HOSTS):
+        if not is_scihub and not any(marker in host for marker in self._FAST_FAIL_PAGE_BYPASS_HOSTS):
             return False
-        if self._is_hard_challenge_block_html(html):
+        if self._is_hard_challenge_block_html(html) and not is_scihub:
             return False
         if self._is_auth_or_paywall_html(html):
             return False
-        return self._is_challenge_html(html)
+        if self._is_challenge_html(html):
+            return True
+        return is_scihub and self._is_hard_challenge_block_html(html)

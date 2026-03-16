@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import requests
 
 from ..utils.logging import get_logger
+from ..config.auto_tuning import load_auto_tuning
 
 logger = get_logger(__name__)
 
@@ -151,6 +152,8 @@ class BasicSession:
         self.timeout = timeout
         # Default browser User-Agent (will be overridden per-request based on domain)
         self.default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        rules = load_auto_tuning()
+        self._ua_overrides = (rules.get("ua_overrides") or {}) if isinstance(rules, dict) else {}
 
     def _get_session(self) -> requests.Session:
         session = getattr(self._local, "session", None)
@@ -168,6 +171,15 @@ class BasicSession:
         # MDPI uses User-Agent whitelist, allows curl but blocks browsers
         if "mdpi.com" in domain or "mdpi-res.com" in domain:
             return "curl/8.0.0"
+
+        overrides = self._ua_overrides or {}
+        curl_hosts = overrides.get("curl") or []
+        if any(marker in domain for marker in curl_hosts):
+            return "curl/8.0.0"
+
+        browser_hosts = overrides.get("browser") or []
+        if any(marker in domain for marker in browser_hosts):
+            return self.default_user_agent
 
         # Default: use browser User-Agent for other sites
         return self.default_user_agent
