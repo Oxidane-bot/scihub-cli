@@ -41,6 +41,7 @@ class SciHubSource(PaperSource):
         "sci-hub.ee",
     )
     _BLOCKED_COOLDOWN_SECONDS = 600.0
+    _FAST_FAIL_BLOCKED_COOLDOWN_SECONDS = 120.0
 
     def __init__(
         self,
@@ -83,7 +84,12 @@ class SciHubSource(PaperSource):
             PDF URL if found, None otherwise
         """
         try:
-            if self._BLOCKED_COOLDOWN_SECONDS > 0:
+            cooldown_seconds = self._BLOCKED_COOLDOWN_SECONDS
+            fast_fail = bool(getattr(self.downloader, "fast_fail", False))
+            if fast_fail and cooldown_seconds > 0:
+                cooldown_seconds = min(cooldown_seconds, self._FAST_FAIL_BLOCKED_COOLDOWN_SECONDS)
+
+            if cooldown_seconds > 0:
                 now = time.monotonic()
                 if now < self._blocked_until:
                     remaining = int(self._blocked_until - now)
@@ -91,7 +97,6 @@ class SciHubSource(PaperSource):
                         f"[Sci-Hub] Skipping mirror attempts (cooldown {remaining}s remaining)"
                     )
                     return None
-            fast_fail = bool(getattr(self.downloader, "fast_fail", False))
             if fast_fail and self._should_skip_fast_fail_for_low_confidence_doi(doi):
                 logger.info(f"[Sci-Hub] Fast-fail skip low-confidence DOI pattern: {doi}")
                 return None
@@ -162,15 +167,13 @@ class SciHubSource(PaperSource):
                     self.mirror_manager.mark_failed(mirror)
                 if blocked:
                     blocked_count += 1
+                    self.mirror_manager.mark_failed(mirror)
 
-            if (
-                self._BLOCKED_COOLDOWN_SECONDS > 0
-                and blocked_count
-                and blocked_count == len(mirrors)
-            ):
-                self._blocked_until = time.monotonic() + self._BLOCKED_COOLDOWN_SECONDS
+            if cooldown_seconds > 0 and blocked_count and blocked_count == len(mirrors):
+                self._blocked_until = time.monotonic() + cooldown_seconds
                 logger.warning(
-                    f"[Sci-Hub] All mirrors returned block pages; cooling down for {int(self._BLOCKED_COOLDOWN_SECONDS)}s"
+                    "[Sci-Hub] All mirrors returned block pages; cooling down for %ss",
+                    int(cooldown_seconds),
                 )
 
             logger.warning(f"[Sci-Hub] Could not extract download URL for {doi}")

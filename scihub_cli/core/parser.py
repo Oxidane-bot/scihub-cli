@@ -24,6 +24,13 @@ class ContentParser:
         "no matching proxies found",
         "please try searching the corresponding doi again",
         "you can close this page and check later if the article has been downloaded",
+        "just a moment...",
+        "enable javascript and cookies to continue",
+        "window._cf_chl_opt",
+        "/cdn-cgi/challenge-platform/",
+        "__cf_chl",
+        "cf-error-details",
+        "cloudflare ray id",
     )
 
     def __init__(self):

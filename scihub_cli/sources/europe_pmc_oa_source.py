@@ -71,6 +71,9 @@ class EuropePMCOASource(PaperSource):
             logger.debug(f"[Europe PMC OA] Paper {doi} is not open access")
             return None
         pdf_url = metadata.get("pdf_url")
+        pmcid = metadata.get("pmcid")
+        if pmcid and self._should_prefer_pmc_render(pdf_url):
+            pdf_url = self._pmcid_pdf_url(pmcid)
         if pdf_url:
             if self._should_skip_pdf_url(pdf_url):
                 logger.info(f"[Europe PMC OA] Fast-fail skip challenge-heavy PDF URL: {pdf_url}")
@@ -196,6 +199,25 @@ class EuropePMCOASource(PaperSource):
     @staticmethod
     def _pmcid_pdf_url(pmcid: str) -> str:
         return f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmcid}&blobtype=pdf"
+
+    @classmethod
+    def _should_prefer_pmc_render(cls, pdf_url: str | None) -> bool:
+        if not pdf_url:
+            return True
+        try:
+            parsed = urlparse(pdf_url)
+        except ValueError:
+            return True
+        host = parsed.netloc.lower()
+        path = (parsed.path or "").lower()
+        query = (parsed.query or "").lower()
+        if "europepmc.org" in host and "backend/ptpmcrender.fcgi" not in path:
+            return True
+        if "ncbi.nlm.nih.gov" in host:
+            return True
+        if "/pdf/" in path and not path.endswith(".pdf"):
+            return True
+        return "pdf=render" in query
 
     def _extract_pdf_url(self, record: dict[str, Any]) -> str | None:
         fulltext = (record.get("fullTextUrlList") or {}).get("fullTextUrl") or []

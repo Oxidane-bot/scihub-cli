@@ -22,13 +22,17 @@ from .core.source_manager import SourceManager
 from .models import DownloadProgress, DownloadResult, ProgressCallback
 from .network.session import BasicSession
 from .sources.arxiv_source import ArxivSource
+from .sources.base_oai_source import BASESource
 from .sources.core_source import CORESource
 from .sources.direct_pdf_source import DirectPDFSource
 from .sources.europe_pmc_oa_source import EuropePMCOASource
 from .sources.europe_pmc_source import EuropePMCSource
 from .sources.html_landing_source import HTMLLandingSource
+from .sources.openaire_source import OpenAireSource
+from .sources.osti_source import OSTISource
 from .sources.openalex_source import OpenAlexSource
 from .sources.pmc_source import PMCSource
+from .sources.semantic_scholar_source import SemanticScholarSource
 from .sources.scihub_source import SciHubSource
 from .sources.unpaywall_source import UnpaywallSource
 from .utils.logging import get_logger
@@ -129,6 +133,40 @@ class SciHubClient:
         "blobtype=pdf",
         "download=true",
     )
+    _NON_ACADEMIC_PATH_HINTS = (
+        "/about",
+        "/about-us",
+        "/account",
+        "/author",
+        "/authors",
+        "/blog",
+        "/careers",
+        "/contact",
+        "/events",
+        "/help",
+        "/home",
+        "/index",
+        "/jobs",
+        "/login",
+        "/media",
+        "/news",
+        "/press",
+        "/privacy",
+        "/search",
+        "/signup",
+        "/sign-up",
+        "/subscribe",
+        "/terms",
+        "/policy",
+        "/logo",
+        "/image",
+        "/images",
+        "/gallery",
+        "/thumbnail",
+        "search=",
+        "query=",
+        "q=",
+    )
 
     def __init__(
         self,
@@ -214,6 +252,9 @@ class SciHubClient:
             # arXiv: Free and open, always enabled (high priority for preprints)
             sources.insert(0, ArxivSource(timeout=self.timeout))
 
+            # OSTI: DOE technical report DOIs (10.2172)
+            sources.insert(0, OSTISource())
+
             # OpenAlex: OA metadata + PDF links, no email required
             sources.insert(
                 0,
@@ -223,6 +264,18 @@ class SciHubClient:
                     api_key=settings.openalex_api_key,
                     fast_fail=self.fast_fail,
                 ),
+            )
+
+            # Semantic Scholar: OA metadata + PDF links, no email required
+            sources.insert(
+                0,
+                SemanticScholarSource(timeout=self.timeout, fast_fail=self.fast_fail),
+            )
+
+            # OpenAIRE: OA repository links, no email required
+            sources.insert(
+                0,
+                OpenAireSource(timeout=self.timeout, fast_fail=self.fast_fail),
             )
 
             # Europe PMC: OA discovery for biomedical literature (no email required)
@@ -243,6 +296,9 @@ class SciHubClient:
                         email=self.email, timeout=self.timeout, fast_fail=self.fast_fail
                     ),
                 )
+
+            # BASE OAI-PMH: OA repository links (IP-restricted interface)
+            sources.insert(0, BASESource(timeout=self.timeout, fast_fail=self.fast_fail))
 
             # CORE does not require email, keep as OA fallback (unless explicitly disabled)
             if self.enable_core:
@@ -782,11 +838,13 @@ class SciHubClient:
         pmc_id = match.group(1).upper()
 
         candidates = [
-            f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf",
+            f"https://pmc.ncbi.nlm.nih.gov/articles/{pmc_id}/pdf/",
+            f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/pdf/",
             f"https://europepmc.org/articles/{pmc_id}?pdf=render",
+            f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf",
         ]
         if fast_fail:
-            return candidates[:1]
+            return candidates[:2]
         return candidates
 
     def _convert_pdf_to_markdown(self, pdf_path: str) -> tuple[str | None, bool | None, str | None]:
@@ -879,14 +937,21 @@ class SciHubClient:
         raw_identifiers = [entry[1] for entry in extracted_entries]
         if self.academic_only:
             total_before_filter = len(extracted_entries)
+            def _should_keep(entry: tuple[str, str]) -> bool:
+                original, identifier = entry
+                if not self._is_probably_academic_identifier(identifier):
+                    return False
+                if self.fast_fail and self._should_fast_fail_url(identifier, identifier):
+                    return False
+                return True
             extracted_entries = [
                 (original, identifier)
                 for original, identifier in extracted_entries
-                if self._is_probably_academic_identifier(identifier)
+                if _should_keep((original, identifier))
             ]
             dropped = total_before_filter - len(extracted_entries)
             logger.info(
-                "Academic-only filter enabled: kept %s/%s identifiers (dropped %s non-academic URLs)",
+                "Academic-only filter enabled: kept %s/%s identifiers (dropped %s non-academic or non-document URLs)",
                 len(extracted_entries),
                 total_before_filter,
                 dropped,
@@ -1005,6 +1070,10 @@ class SciHubClient:
         ):
             return False
 
+        path_query = f"{path}?{(parsed.query or '').lower()}"
+        if any(hint in path_query for hint in SciHubClient._NON_ACADEMIC_PATH_HINTS):
+            return False
+
         if host.endswith(".edu") or host.endswith(".gov") or ".ac." in host:
             return True
         if any(marker in host for marker in FileDownloader._ACADEMIC_HOST_MARKERS):
@@ -1012,7 +1081,6 @@ class SciHubClient:
         if any(hint in host for hint in SciHubClient._ACADEMIC_HOST_HINTS):
             return True
 
-        path_query = f"{path}?{(parsed.query or '').lower()}"
         if any(hint in path_query for hint in SciHubClient._ACADEMIC_PATH_HINTS):
             return True
         if re.search(r"10\\.[0-9]{4,9}/[-._;()/:a-z0-9]+", path_query, flags=re.I):

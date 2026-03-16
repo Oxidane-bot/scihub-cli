@@ -30,7 +30,6 @@ class UnpaywallSource(PaperSource):
         "onlinelibrary.wiley.com",
         "tandfonline.com",
         "academic.oup.com",
-        "downloads.hindawi.com",
         "scispace.com",
     )
 

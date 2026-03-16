@@ -4,6 +4,7 @@ OpenAlex source implementation.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -26,6 +27,8 @@ logger = get_logger(__name__)
 class OpenAlexSource(PaperSource):
     """OpenAlex open-access source."""
 
+    _RATE_LIMIT_COOLDOWN_SECONDS = 120
+
     _FAST_FAIL_SKIP_PDF_HOSTS = (
         "sciencedirect.com",
         "onlinelibrary.wiley.com",
@@ -46,6 +49,7 @@ class OpenAlexSource(PaperSource):
         self.timeout = min(timeout, 5) if fast_fail else timeout
         self.email = (email or "").strip() or None
         self.api_key = (api_key or "").strip() or None
+        self._rate_limited_until: float | None = None
         self.base_url = "https://api.openalex.org/works"
         self.session = requests.Session()
         self.session.trust_env = False
@@ -113,6 +117,11 @@ class OpenAlexSource(PaperSource):
         if doi in self._metadata_cache:
             logger.debug(f"[OpenAlex] Using cached metadata for {doi}")
             return self._metadata_cache[doi]
+
+        if self._is_rate_limited():
+            cooldown = self._rate_limited_until - time.monotonic() if self._rate_limited_until else 0
+            logger.info("[OpenAlex] Skipping API due to recent rate limit (cooldown %.0fs)", cooldown)
+            return None
 
         logger.debug(f"[OpenAlex] Fetching metadata for {doi}")
 
@@ -238,6 +247,9 @@ class OpenAlexSource(PaperSource):
 
             if response.status_code == 429:
                 logger.warning(f"[OpenAlex] Rate limited for {doi}")
+                if self.fast_fail:
+                    self._rate_limited_until = time.monotonic() + self._RATE_LIMIT_COOLDOWN_SECONDS
+                    raise PermanentError("Rate limited")
                 raise RetryableError("Rate limited")
 
             if response.status_code == 401 or response.status_code == 403:
@@ -296,3 +308,10 @@ class OpenAlexSource(PaperSource):
             if derived:
                 return derived
         return None
+
+    def _is_rate_limited(self) -> bool:
+        if not self.fast_fail:
+            return False
+        if self._rate_limited_until is None:
+            return False
+        return time.monotonic() < self._rate_limited_until
