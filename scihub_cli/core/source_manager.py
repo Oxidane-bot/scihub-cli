@@ -157,10 +157,11 @@ class SourceManager:
                 ["OpenAlex", "Unpaywall", "Europe PMC OA", "Europe PMC", "arXiv", "CORE"]
             )
 
-        if "OSTI" in self.sources and self.sources["OSTI"].can_handle(doi):
-            if not any(source.name == "OSTI" for source in chain):
-                logger.info("[Router] Detected OSTI DOI, prioritizing OSTI source")
-                chain = [self.sources["OSTI"], *chain]
+        if "OSTI" in self.sources and self.sources["OSTI"].can_handle(doi) and not any(
+            source.name == "OSTI" for source in chain
+        ):
+            logger.info("[Router] Detected OSTI DOI, prioritizing OSTI source")
+            chain = [self.sources["OSTI"], *chain]
 
         return self._filter_chain(chain, exclude_sources)
 

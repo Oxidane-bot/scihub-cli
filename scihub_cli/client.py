@@ -983,13 +983,13 @@ class SciHubClient:
         raw_identifiers = [entry[1] for entry in extracted_entries]
         if self.academic_only:
             total_before_filter = len(extracted_entries)
+
             def _should_keep(entry: tuple[str, str]) -> bool:
-                original, identifier = entry
+                _, identifier = entry
                 if not self._is_probably_academic_identifier(identifier):
                     return False
-                if self.fast_fail and self._should_fast_fail_url(identifier, identifier):
-                    return False
-                return True
+                return not (self.fast_fail and self._should_fast_fail_url(identifier, identifier))
+
             extracted_entries = [
                 (original, identifier)
                 for original, identifier in extracted_entries
@@ -1129,12 +1129,10 @@ class SciHubClient:
 
         if any(hint in path_query for hint in SciHubClient._ACADEMIC_PATH_HINTS):
             return True
-        if re.search(r"10\\.[0-9]{4,9}/[-._;()/:a-z0-9]+", path_query, flags=re.I):
-            return True
 
         # Unknown hosts without academic signals are treated as non-academic when
         # academic-only filtering is enabled.
-        return False
+        return bool(re.search(r"10\\.[0-9]{4,9}/[-._;()/:a-z0-9]+", path_query, flags=re.I))
 
     @staticmethod
     def _extract_identifier_from_line(line: str) -> str | None:
@@ -1296,9 +1294,7 @@ class SciHubClient:
         if lowered.startswith("arxiv:"):
             return True
         # arXiv bare identifiers
-        if re.fullmatch(r"\d{4}\.\d{4,5}(?:v\d+)?", identifier):
-            return True
-        return False
+        return bool(re.fullmatch(r"\d{4}\.\d{4,5}(?:v\d+)?", identifier))
 
     @staticmethod
     def _select_retry_identifier(

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import requests
 from requests.adapters import HTTPAdapter
 
+from ..core.pdf_link_extractor import derive_publisher_pdf_candidates, should_try_html_landing
 from ..utils.logging import get_logger
 from ..utils.retry import (
     APIRetryConfig,
@@ -18,7 +19,6 @@ from ..utils.retry import (
     RetryableError,
     retry_with_classification,
 )
-from ..core.pdf_link_extractor import derive_publisher_pdf_candidates, should_try_html_landing
 from .base import PaperSource
 
 logger = get_logger(__name__)

@@ -10,8 +10,8 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 import requests
 
+from ..config.auto_tuning import _merge_domain_list, load_auto_tuning
 from ..config.settings import settings
-from ..config.auto_tuning import load_auto_tuning, _merge_domain_list
 from ..network.session import BasicSession
 from ..utils.logging import get_logger
 from ..utils.retry import (
@@ -608,9 +608,10 @@ class FileDownloader:
 
         out: list[str] = []
 
-        if "/server/api/core/bitstreams/" in lowered_path or "/bitstreams/" in lowered_path:
-            if "/content" not in lowered_path:
-                out.append(urlunparse(parsed._replace(path=path.rstrip("/") + "/content", query="")))
+        if (
+            "/server/api/core/bitstreams/" in lowered_path or "/bitstreams/" in lowered_path
+        ) and "/content" not in lowered_path:
+            out.append(urlunparse(parsed._replace(path=path.rstrip("/") + "/content", query="")))
 
         if "onlinelibrary.wiley.com" in host:
             if any(token in lowered_path for token in ("/doi/pdf", "/doi/epdf", "/doi/pdfdirect")):
@@ -860,9 +861,7 @@ class FileDownloader:
         html = event.get("html")
         if not isinstance(url, str) or not isinstance(html, str):
             return True
-        if self._is_scihub_host(url):
-            return True
-        return False
+        return bool(self._is_scihub_host(url))
 
     @staticmethod
     def _is_scihub_host(url: str) -> bool:
@@ -1568,9 +1567,10 @@ class FileDownloader:
         ):
             parsed = parsed._replace(scheme="https")
 
-        if "mdpi.com" in host or "mdpi-res.com" in host or "res.mdpi.com" in host:
-            if path.lower().endswith("/pdf") and not query:
-                parsed = parsed._replace(query="download=1")
+        if (
+            "mdpi.com" in host or "mdpi-res.com" in host or "res.mdpi.com" in host
+        ) and path.lower().endswith("/pdf") and not query:
+            parsed = parsed._replace(query="download=1")
 
         return urlunparse(parsed)
 
@@ -1775,10 +1775,9 @@ class FileDownloader:
         path = parsed.path or ""
         query = parse_qs(parsed.query or "")
 
-        if "mdpi.com" in host:
-            if "/pdf" in path:
-                landing_path = path.replace("/pdf", "")
-                return urlunparse(parsed._replace(path=landing_path, query=""))
+        if "mdpi.com" in host and "/pdf" in path:
+            landing_path = path.replace("/pdf", "")
+            return urlunparse(parsed._replace(path=landing_path, query=""))
 
         if "sciencedirect.com" in host:
             pii_match = re.search(r"/pii/([A-Z0-9]+)", path, flags=re.I)
@@ -1787,17 +1786,19 @@ class FileDownloader:
                 landing_path = f"/science/article/pii/{pii}"
                 return urlunparse(parsed._replace(netloc="www.sciencedirect.com", path=landing_path, query=""))
 
-        if "onlinelibrary.wiley.com" in host:
-            if path.startswith("/doi/pdfdirect/") or path.startswith("/doi/pdf/"):
-                doi = path.split("/doi/", 1)[1].replace("pdfdirect/", "").replace("pdf/", "")
-                return urlunparse(parsed._replace(path=f"/doi/full/{doi}", query=""))
+        if "onlinelibrary.wiley.com" in host and (
+            path.startswith("/doi/pdfdirect/") or path.startswith("/doi/pdf/")
+        ):
+            doi = path.split("/doi/", 1)[1].replace("pdfdirect/", "").replace("pdf/", "")
+            return urlunparse(parsed._replace(path=f"/doi/full/{doi}", query=""))
 
-        if "academic.oup.com" in host:
-            if "/article-pdf/doi/" in path or "/advance-article-pdf/doi/" in path:
-                parts = path.split("/doi/", 1)
-                if len(parts) == 2:
-                    doi = parts[1].split("/", 1)[0]
-                    return urlunparse(parsed._replace(path=f"/doi/{doi}", query=""))
+        if "academic.oup.com" in host and (
+            "/article-pdf/doi/" in path or "/advance-article-pdf/doi/" in path
+        ):
+            parts = path.split("/doi/", 1)
+            if len(parts) == 2:
+                doi = parts[1].split("/", 1)[0]
+                return urlunparse(parsed._replace(path=f"/doi/{doi}", query=""))
 
         if "papers.ssrn.com" in host:
             abstract_id = (query.get("abstractid") or query.get("abstract_id") or [None])[0]

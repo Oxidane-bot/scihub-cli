@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -217,9 +218,8 @@ class OpenAireSource(PaperSource):
             return []
         if isinstance(value, str):
             return [value]
-        if isinstance(value, dict):
-            if "$" in value:
-                return [str(value.get("$"))]
+        if isinstance(value, dict) and "$" in value:
+            return [str(value.get("$"))]
         return []
 
     def _extract_instance_urls(self, instance: dict[str, Any]) -> list[str]:

@@ -286,9 +286,7 @@ def should_try_html_landing(url: str | None) -> bool:
     )
     if any(hint in host for hint in hints):
         return True
-    if host.endswith(".edu") or ".ac." in host:
-        return True
-    return False
+    return bool(host.endswith(".edu") or ".ac." in host)
 
 
 def _score_url(url: str) -> int:

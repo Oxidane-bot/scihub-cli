@@ -9,8 +9,8 @@ from urllib.parse import urlparse
 
 import requests
 
-from ..utils.logging import get_logger
 from ..config.auto_tuning import load_auto_tuning
+from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
