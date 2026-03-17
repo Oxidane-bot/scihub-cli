@@ -250,7 +250,9 @@ class HTMLLandingSource(PaperSource):
             selected = prefetch_candidates[0]
             logger.info(f"[HTML Landing] Using deterministic prefetch candidate: {selected}")
             return selected
-        prefetched = self._probe_candidates(prefetch_candidates, mode="prefetch")
+        prefetched = None
+        if not self._should_defer_prefetch_probe(host=host, fast_fail=fast_fail):
+            prefetched = self._probe_candidates(prefetch_candidates, mode="prefetch")
         if prefetched:
             return prefetched
         if skip_html_fetch:
@@ -267,9 +269,8 @@ class HTMLLandingSource(PaperSource):
         )
         if not html:
             return None
-        if fast_fail and self._looks_like_challenge_html(html):
-            logger.debug("[HTML Landing] Fast-fail: challenge HTML detected, skipping extraction")
-            return None
+
+        reader_fetched = False
 
         if self._should_force_reader_before_extraction(
             host=host,
@@ -280,6 +281,27 @@ class HTMLLandingSource(PaperSource):
             reader_html, reader_status = self._fetch_page_with_jina_reader(base_url)
             if reader_html:
                 html, status = reader_html, reader_status
+                reader_fetched = True
+
+        if fast_fail and self._looks_like_challenge_html(html):
+            if not self._should_try_reader_fallback(
+                host=host,
+                status=status,
+                html=html,
+                fast_fail=fast_fail,
+            ):
+                logger.debug("[HTML Landing] Fast-fail: challenge HTML detected, skipping extraction")
+                return None
+            if not reader_fetched:
+                reader_html, reader_status = self._fetch_page_with_jina_reader(base_url)
+                if reader_html:
+                    html, status = reader_html, reader_status
+                    reader_fetched = True
+            if self._looks_like_challenge_html(html):
+                logger.debug(
+                    "[HTML Landing] Fast-fail: reader fallback still returned challenge HTML"
+                )
+                return None
 
         # Sometimes a server returns a PDF even for a non-.pdf URL.
         if status == 200 and html.lstrip().startswith("%PDF"):
@@ -296,7 +318,7 @@ class HTMLLandingSource(PaperSource):
 
         # Reader fallback is expensive; only attempt when primary HTML did not yield
         # a usable candidate.
-        if self._should_try_reader_fallback(
+        if not reader_fetched and self._should_try_reader_fallback(
             host=host,
             status=status,
             html=html,
@@ -512,6 +534,14 @@ class HTMLLandingSource(PaperSource):
         if cls._is_unhelpful_candidate_url(candidate) or cls._is_malformed_candidate_url(candidate):
             return False
         return ".pdf" in candidate or "/pdf" in candidate
+
+    @classmethod
+    def _should_defer_prefetch_probe(cls, *, host: str, fast_fail: bool) -> bool:
+        if not fast_fail:
+            return False
+        if any(marker in host for marker in cls._FAST_FAIL_DIRECT_PREFETCH_HOST_MARKERS):
+            return False
+        return any(marker in host for marker in cls._FAST_FAIL_READER_FALLBACK_HOST_MARKERS)
 
     @classmethod
     def _should_skip_html_fetch(cls, host: str) -> bool:

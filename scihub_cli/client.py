@@ -8,7 +8,7 @@ import time
 from dataclasses import replace
 from html import unescape
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from .config.settings import settings
@@ -29,11 +29,11 @@ from .sources.europe_pmc_oa_source import EuropePMCOASource
 from .sources.europe_pmc_source import EuropePMCSource
 from .sources.html_landing_source import HTMLLandingSource
 from .sources.openaire_source import OpenAireSource
-from .sources.osti_source import OSTISource
 from .sources.openalex_source import OpenAlexSource
+from .sources.osti_source import OSTISource
 from .sources.pmc_source import PMCSource
-from .sources.semantic_scholar_source import SemanticScholarSource
 from .sources.scihub_source import SciHubSource
+from .sources.semantic_scholar_source import SemanticScholarSource
 from .sources.unpaywall_source import UnpaywallSource
 from .utils.logging import get_logger
 from .utils.retry import RetryConfig
@@ -420,19 +420,11 @@ class SciHubClient:
                 html_events.append(dict(snapshot))
 
         source_attempts: list[dict[str, Any]]
-        # Get PDF URL and metadata together (avoids duplicate API calls)
-        if hasattr(self.source_manager, "get_pdf_url_with_metadata_and_trace"):
-            download_url, metadata, source, source_attempts = (
-                self.source_manager.get_pdf_url_with_metadata_and_trace(
-                    normalized_identifier,
-                    html_snapshot_callback=_collect_html_snapshot if self.trace_html else None,
-                )
-            )
-        else:
-            download_url, metadata, source = self.source_manager.get_pdf_url_with_metadata(
-                normalized_identifier
-            )
-            source_attempts = []
+        download_url, metadata, source, source_attempts = self._query_sources_with_identifier_fallback(
+            identifier=identifier,
+            normalized_identifier=normalized_identifier,
+            html_snapshot_callback=_collect_html_snapshot if self.trace_html else None,
+        )
 
         if not download_url:
             error = f"Could not find PDF URL for {normalized_identifier} from any source"
@@ -649,6 +641,64 @@ class SciHubClient:
             source_attempts=source_attempts,
         )
 
+    def _query_sources_with_identifier_fallback(
+        self,
+        *,
+        identifier: str,
+        normalized_identifier: str,
+        html_snapshot_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[dict[str, Any]]]:
+        """
+        Query URL-specific handlers with the original input before falling back to the
+        normalized DOI/identifier chain.
+        """
+        lookup_candidates: list[str] = []
+        for candidate in (identifier, normalized_identifier):
+            cleaned = (candidate or "").strip()
+            if cleaned and cleaned not in lookup_candidates:
+                lookup_candidates.append(cleaned)
+
+        combined_attempts: list[dict[str, Any]] = []
+        combined_metadata: Optional[dict] = None
+        final_source: Optional[str] = None
+
+        for lookup_identifier in lookup_candidates:
+            query_result = self._query_source_manager(
+                lookup_identifier,
+                html_snapshot_callback=html_snapshot_callback,
+            )
+            download_url, metadata, source, attempts = query_result
+            if attempts:
+                combined_attempts.extend(attempts)
+            if metadata and not combined_metadata:
+                combined_metadata = metadata
+            if download_url:
+                return download_url, metadata or combined_metadata, source, combined_attempts
+            if source:
+                final_source = source
+
+        return None, combined_metadata, final_source, combined_attempts
+
+    def _query_source_manager(
+        self,
+        lookup_identifier: str,
+        *,
+        html_snapshot_callback: Callable[[dict[str, Any]], None] | None = None,
+        exclude_sources: set[str] | None = None,
+        force_sequential: bool = False,
+    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[dict[str, Any]]]:
+        """Query the configured source manager while preserving trace output when available."""
+        if hasattr(self.source_manager, "get_pdf_url_with_metadata_and_trace"):
+            return self.source_manager.get_pdf_url_with_metadata_and_trace(
+                lookup_identifier,
+                html_snapshot_callback=html_snapshot_callback,
+                exclude_sources=exclude_sources,
+                force_sequential=force_sequential,
+            )
+
+        download_url, metadata, source = self.source_manager.get_pdf_url_with_metadata(lookup_identifier)
+        return download_url, metadata, source, []
+
     def _persist_html_snapshots(
         self, identifier: str, snapshots: list[dict[str, Any]]
     ) -> list[dict[str, Any]] | None:
@@ -837,15 +887,11 @@ class SciHubClient:
             return []
         pmc_id = match.group(1).upper()
 
-        candidates = [
-            f"https://pmc.ncbi.nlm.nih.gov/articles/{pmc_id}/pdf/",
-            f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/pdf/",
-            f"https://europepmc.org/articles/{pmc_id}?pdf=render",
+        del fast_fail
+        return [
             f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf",
+            f"https://europepmc.org/articles/{pmc_id}?pdf=render",
         ]
-        if fast_fail:
-            return candidates[:2]
-        return candidates
 
     def _convert_pdf_to_markdown(self, pdf_path: str) -> tuple[str | None, bool | None, str | None]:
         from .converters.pdf_to_md import MarkdownConvertOptions
@@ -1118,23 +1164,28 @@ class SciHubClient:
         if pdf_url_match:
             cleaned = pdf_url_match.group(0)
         else:
-            # Prefer DOI tokens when embedded in noisy lines.
-            doi_match = re.search(DOIProcessor.DOI_PATTERN, cleaned, flags=re.IGNORECASE)
-            if doi_match:
-                cleaned = DOIProcessor._clean_doi_candidate(doi_match.group(0))
+            # Preserve plain landing-page URLs as URLs so URL-specific sources can run
+            # before any DOI-based fallback.
+            if re.fullmatch(r"https?://[^\s\"'<>]+", cleaned):
+                cleaned = cleaned
             else:
-                # arXiv identifiers commonly appear without scheme.
-                arxiv_match = re.search(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b", cleaned)
-                if arxiv_match:
-                    cleaned = arxiv_match.group(0)
+                # Prefer DOI tokens when embedded in noisy lines.
+                doi_match = re.search(DOIProcessor.DOI_PATTERN, cleaned, flags=re.IGNORECASE)
+                if doi_match:
+                    cleaned = DOIProcessor._clean_doi_candidate(doi_match.group(0))
                 else:
-                    # If a URL is embedded in the line, prefer the first URL token.
-                    url_tokens = DOIProcessor._URL_TOKEN_PATTERN.findall(cleaned)
-                    if url_tokens:
-                        if len(url_tokens) > 1:
-                            cleaned = DOIProcessor._select_primary_url_token(cleaned).strip()
-                        else:
-                            cleaned = url_tokens[0].strip()
+                    # arXiv identifiers commonly appear without scheme.
+                    arxiv_match = re.search(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b", cleaned)
+                    if arxiv_match:
+                        cleaned = arxiv_match.group(0)
+                    else:
+                        # If a URL is embedded in the line, prefer the first URL token.
+                        url_tokens = DOIProcessor._URL_TOKEN_PATTERN.findall(cleaned)
+                        if url_tokens:
+                            if len(url_tokens) > 1:
+                                cleaned = DOIProcessor._select_primary_url_token(cleaned).strip()
+                            else:
+                                cleaned = url_tokens[0].strip()
 
         cleaned = DOIProcessor._strip_trailing_noise(cleaned).strip(")];,")
         cleaned = cleaned.strip("[]()<>\"'")

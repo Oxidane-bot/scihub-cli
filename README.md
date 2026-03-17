@@ -350,9 +350,9 @@ The tool automatically adapts HTTP headers for different publishers:
 
 This tool is provided for educational and research purposes only. Users are responsible for ensuring they comply with applicable laws and regulations when using this tool.
 
-## Longrun Benchmarking
+## Longrun Iteration Workflow
 
-For iterative optimization runs that analyze HTML failure snapshots and auto-tune host rules, see:
+For the agent-driven longrun process that runs the downloader, inspects failure diagnostics, updates code or configuration, and keeps the best final version, see:
 
 - `docs/longrun_benchmark.md`
 

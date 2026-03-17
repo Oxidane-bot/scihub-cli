@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from scihub_cli.client import SciHubClient
 from scihub_cli.converters.pdf_to_md import MarkdownConvertOptions
@@ -121,6 +122,26 @@ class _StubConverter:
             return False, "conversion failed"
         Path(md_path).write_text(f"converted: {pdf_path}\n", encoding="utf-8")
         return True, None
+
+
+class _RecordingSourceManager:
+    def __init__(self, responses: dict[str, tuple[str | None, dict[str, Any] | None, str | None]]):
+        self._responses = responses
+        self.calls: list[str] = []
+
+    def get_pdf_url_with_metadata_and_trace(
+        self,
+        identifier: str,
+        year: int | None = None,  # noqa: ARG002
+        html_snapshot_callback=None,  # noqa: ARG002
+        *,
+        exclude_sources: set[str] | None = None,  # noqa: ARG002
+        force_sequential: bool = False,  # noqa: ARG002
+    ) -> tuple[str | None, dict[str, Any] | None, str | None, list[dict[str, Any]]]:
+        self.calls.append(identifier)
+        pdf_url, metadata, source = self._responses.get(identifier, (None, None, None))
+        status = "success" if pdf_url else "no_result"
+        return pdf_url, metadata, source, [{"source": source or "stub", "status": status}]
 
 
 def test_download_result_includes_metadata_and_progress(tmp_path: Path):
@@ -451,3 +472,109 @@ def test_collect_download_candidates_normalizes_markdown_concatenated_urls(tmp_p
 
     assert "https://cdn.example.org/paper.pdf" in candidates
     assert all(")](" not in url for url in candidates)
+
+
+def test_url_input_tries_url_specific_sources_before_doi_fallback(tmp_path: Path):
+    landing_url = "https://doi.org/10.1111/rmir.12114"
+    normalized_doi = "10.1111/rmir.12114"
+    pdf_url = "https://example.org/rmir-12114.pdf"
+    session = _FakeSession({pdf_url: _make_fake_pdf_bytes()})
+    downloader = FileDownloader(session=session, timeout=5)  # type: ignore[arg-type]
+
+    source_manager = _RecordingSourceManager(
+        {
+            landing_url: (None, None, None),
+            normalized_doi: (
+                pdf_url,
+                {"title": "RMIR Article", "year": 2024, "doi": normalized_doi},
+                "OpenAlex",
+            ),
+        }
+    )
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        downloader=downloader,
+        source_manager=source_manager,  # type: ignore[arg-type]
+    )
+
+    result = client.download_paper(landing_url)
+
+    assert result.success
+    assert result.file_path
+    assert result.normalized_identifier == normalized_doi
+    assert source_manager.calls == [landing_url, normalized_doi]
+
+
+def test_extract_identifier_from_line_preserves_plain_doi_url():
+    landing_url = "https://doi.org/10.1111/rmir.12114"
+
+    extracted = SciHubClient._extract_identifier_from_line(landing_url)
+
+    assert extracted == landing_url
+
+
+def test_url_input_short_circuits_when_url_specific_lookup_succeeds(tmp_path: Path):
+    landing_url = "https://academic.oup.com/ijlct/article/16/4/1135/6263493"
+    pdf_url = "https://academic.oup.com/ijlct/article-pdf/16/4/1135/6263493.pdf"
+    session = _FakeSession({pdf_url: _make_fake_pdf_bytes()})
+    downloader = FileDownloader(session=session, timeout=5)  # type: ignore[arg-type]
+
+    source_manager = _RecordingSourceManager(
+        {
+            landing_url: (
+                pdf_url,
+                {"title": "OUP Article", "year": 2021},
+                "HTML Landing",
+            ),
+        }
+    )
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        downloader=downloader,
+        source_manager=source_manager,  # type: ignore[arg-type]
+    )
+
+    result = client.download_paper(landing_url)
+
+    assert result.success
+    assert result.source == "HTML Landing"
+    assert source_manager.calls == [landing_url]
+
+
+def test_sciencedirect_url_can_fallback_to_resolved_doi_after_url_lookup(tmp_path: Path):
+    article_url = "https://sciencedirect.com/science/article/abs/pii/S036054429600165X"
+    resolved_doi = "10.1016/s0360-5442(96)00165-x"
+    pdf_url = "https://example.org/s036054429600165x.pdf"
+    session = _FakeSession({pdf_url: _make_fake_pdf_bytes()})
+    downloader = FileDownloader(session=session, timeout=5)  # type: ignore[arg-type]
+
+    source_manager = _RecordingSourceManager(
+        {
+            article_url: (None, None, None),
+            resolved_doi: (
+                pdf_url,
+                {"title": "ScienceDirect Article", "year": 1996, "doi": resolved_doi},
+                "Sci-Hub",
+            ),
+        }
+    )
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        downloader=downloader,
+        source_manager=source_manager,  # type: ignore[arg-type]
+    )
+
+    client._resolve_sciencedirect_pii_to_doi = lambda identifier: resolved_doi  # type: ignore[method-assign]
+
+    result = client.download_paper(article_url)
+
+    assert result.success
+    assert result.file_path
+    assert result.normalized_identifier == resolved_doi
+    assert source_manager.calls == [article_url, resolved_doi]
