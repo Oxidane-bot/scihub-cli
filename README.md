@@ -348,7 +348,37 @@ The tool automatically adapts HTTP headers for different publishers:
 
 ## Use with AI Agents (MCP)
 
-If you want to let LLM-based agents (Claude, GPT, etc.) download papers directly, check out [**paper-download-mcp**](https://github.com/Oxidane-bot/paper-download-mcp) -- an MCP server built on the same core that exposes paper downloading as a tool your agent can call.
+[paper-download-mcp](https://github.com/Oxidane-bot/paper-download-mcp) is an MCP server built on the same core, exposing paper downloading as a tool your agent can call. Install `uv` first (`uvx --version` to verify), then:
+
+### Claude Code
+
+```bash
+claude mcp add --transport stdio --scope project --env PAPER_DOWNLOAD_EMAIL=your-email@university.edu paper-download -- uvx paper-download-mcp
+```
+
+### Claude Desktop
+
+Edit MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+
+```json
+{
+  "mcpServers": {
+    "paper-download": {
+      "command": "uvx",
+      "args": ["paper-download-mcp"],
+      "env": {
+        "PAPER_DOWNLOAD_EMAIL": "your-email@university.edu"
+      }
+    }
+  }
+}
+```
+
+### Codex
+
+```bash
+codex mcp add paper-download --env PAPER_DOWNLOAD_EMAIL=your-email@university.edu -- uvx paper-download-mcp
+```
 
 ## Legal Disclaimer
 
