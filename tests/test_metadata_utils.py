@@ -7,8 +7,12 @@ Updated for multi-source architecture (Sci-Hub + Unpaywall).
 import os
 import unittest
 
+import pytest
+
 from scihub_cli.metadata_utils import generate_filename_from_metadata
 from scihub_cli.sources.unpaywall_source import UnpaywallSource
+
+pytestmark = pytest.mark.integration
 
 
 class TestMetadataUtils(unittest.TestCase):

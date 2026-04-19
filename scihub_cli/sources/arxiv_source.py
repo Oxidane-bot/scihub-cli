@@ -3,7 +3,6 @@ arXiv source implementation.
 """
 
 import re
-from typing import Optional
 from urllib.parse import urlparse
 
 import requests
@@ -35,7 +34,7 @@ class ArxivSource(PaperSource):
         self.session.headers.update({"User-Agent": "scihub-cli/1.0"})
 
         # Metadata caching
-        self._metadata_cache: dict[str, Optional[dict]] = {}
+        self._metadata_cache: dict[str, dict | None] = {}
 
         # Retry configuration for API calls
         self.retry_config = APIRetryConfig()
@@ -57,7 +56,7 @@ class ArxivSource(PaperSource):
         arxiv_id = self._extract_arxiv_id(identifier)
         return arxiv_id is not None
 
-    def get_pdf_url(self, identifier: str) -> Optional[str]:
+    def get_pdf_url(self, identifier: str) -> str | None:
         """
         Get PDF download URL from arXiv.
 
@@ -87,7 +86,7 @@ class ArxivSource(PaperSource):
             logger.warning(f"[arXiv] Failed to verify PDF for {arxiv_id}: {e}")
             return None
 
-    def get_metadata(self, identifier: str) -> Optional[dict[str, str]]:
+    def get_metadata(self, identifier: str) -> dict[str, str] | None:
         """
         Get metadata from arXiv API.
 
@@ -127,7 +126,7 @@ class ArxivSource(PaperSource):
             # Don't cache transient failures that exhausted retries
             return None
 
-    def _fetch_from_api(self, arxiv_id: str) -> Optional[dict[str, str]]:
+    def _fetch_from_api(self, arxiv_id: str) -> dict[str, str] | None:
         """
         Single API fetch attempt with error classification.
 
@@ -203,7 +202,7 @@ class ArxivSource(PaperSource):
             logger.warning(f"[arXiv] Error parsing response for {arxiv_id}: {e}")
             raise PermanentError(f"Parse error: {e}") from e
 
-    def _extract_arxiv_id(self, identifier: str) -> Optional[str]:
+    def _extract_arxiv_id(self, identifier: str) -> str | None:
         """
         Extract arXiv ID from various formats.
 

@@ -6,7 +6,7 @@ import contextlib
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from ..sources.base import PaperSource
@@ -31,6 +31,7 @@ class SourceManager:
         sources: list[PaperSource],
         year_threshold: int = 2021,
         enable_year_routing: bool = True,
+        max_workers: int | None = None,
     ):
         """
         Initialize source manager.
@@ -39,10 +40,12 @@ class SourceManager:
             sources: List of paper sources (order matters for fallback)
             year_threshold: Year threshold for routing strategy (default 2021)
             enable_year_routing: Enable intelligent year-based routing
+            max_workers: Max concurrent source queries (default: PARALLEL_QUERY_WORKERS)
         """
         self.sources = {source.name: source for source in sources}
         self.year_threshold = year_threshold
         self.enable_year_routing = enable_year_routing
+        self._max_workers = max_workers or PARALLEL_QUERY_WORKERS
 
         # Lazy-loaded year detector (only created when needed)
         self._year_detector = None
@@ -59,7 +62,7 @@ class SourceManager:
     def get_source_chain(
         self,
         doi: str,
-        year: Optional[int] = None,
+        year: int | None = None,
         *,
         exclude_sources: set[str] | None = None,
     ) -> list[PaperSource]:
@@ -191,7 +194,7 @@ class SourceManager:
             return chain
         return [source for source in chain if source.name not in exclude_sources]
 
-    def get_pdf_url(self, doi: str, year: Optional[int] = None) -> Optional[str]:
+    def get_pdf_url(self, doi: str, year: int | None = None) -> str | None:
         """
         Get PDF URL trying sources in optimal order.
 
@@ -206,8 +209,8 @@ class SourceManager:
         return pdf_url
 
     def get_pdf_url_with_metadata(
-        self, doi: str, year: Optional[int] = None
-    ) -> tuple[Optional[str], Optional[dict], Optional[str]]:
+        self, doi: str, year: int | None = None
+    ) -> tuple[str | None, dict | None, str | None]:
         """
         Get PDF URL and metadata in one pass (avoids duplicate API calls).
 
@@ -226,12 +229,12 @@ class SourceManager:
     def get_pdf_url_with_metadata_and_trace(
         self,
         doi: str,
-        year: Optional[int] = None,
+        year: int | None = None,
         html_snapshot_callback: HtmlSnapshotCallback | None = None,
         *,
         exclude_sources: set[str] | None = None,
         force_sequential: bool = False,
-    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[SourceAttempt]]:
+    ) -> tuple[str | None, dict | None, str | None, list[SourceAttempt]]:
         """
         Get PDF URL/metadata and source-attempt trace in one pass.
 
@@ -272,7 +275,7 @@ class SourceManager:
         chain: list[PaperSource],
         *,
         html_snapshot_callback: HtmlSnapshotCallback | None = None,
-    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[SourceAttempt]]:
+    ) -> tuple[str | None, dict | None, str | None, list[SourceAttempt]]:
         """
         Query fast sources in parallel first, then fall back to slow sources sequentially.
 
@@ -323,7 +326,7 @@ class SourceManager:
         *,
         phase: str,
         html_snapshot_callback: HtmlSnapshotCallback | None = None,
-    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[SourceAttempt]]:
+    ) -> tuple[str | None, dict | None, str | None, list[SourceAttempt]]:
         """Query sources sequentially (fallback mode)."""
         attempts: list[SourceAttempt] = []
 
@@ -396,7 +399,7 @@ class SourceManager:
         *,
         phase: str,
         html_snapshot_callback: HtmlSnapshotCallback | None = None,
-    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[SourceAttempt]]:
+    ) -> tuple[str | None, dict | None, str | None, list[SourceAttempt]]:
         """
         Query multiple sources in parallel, return first successful result.
 
@@ -416,16 +419,16 @@ class SourceManager:
         source_names = [s.name for s in chain]
         logger.info(f"[Router] Parallel query to {len(chain)} sources: {source_names}")
 
-        workers = min(PARALLEL_QUERY_WORKERS, len(chain))
+        workers = min(self._max_workers, len(chain))
 
         # Track results by source name for priority handling
-        results: dict[str, tuple[Optional[str], Optional[dict]]] = {}
+        results: dict[str, tuple[str | None, dict | None]] = {}
         attempts_by_source: dict[str, SourceAttempt] = {}
         completed_sources = set()
 
         def query_single_source(
             source: PaperSource, priority: int
-        ) -> tuple[str, Optional[str], Optional[dict], SourceAttempt]:
+        ) -> tuple[str, str | None, dict | None, SourceAttempt]:
             """Query a single source, return (source_name, pdf_url, metadata, attempt)."""
             started_at = time.time()
             attempt: SourceAttempt = {
@@ -626,7 +629,7 @@ class SourceManager:
             key=lambda attempt: order.get(str(attempt.get("source")), 999),
         )
 
-    def _get_year_smart(self, doi: str) -> Optional[int]:
+    def _get_year_smart(self, doi: str) -> int | None:
         """
         Get publication year using smart lookup strategy.
 

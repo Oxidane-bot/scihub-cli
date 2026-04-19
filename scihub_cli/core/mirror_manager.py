@@ -4,7 +4,6 @@ Mirror management and selection logic.
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
 
 import requests
 
@@ -22,7 +21,7 @@ MIRROR_TEST_TIMEOUT = 5  # seconds
 class MirrorManager:
     """Manages mirror selection and testing."""
 
-    def __init__(self, mirrors: Optional[list[str]] = None, timeout: int = None):
+    def __init__(self, mirrors: list[str] | None = None, timeout: int = None):
         self.mirrors = mirrors or MirrorConfig.get_all_mirrors()
         self.timeout = timeout or settings.timeout
         self._headers = {
@@ -34,8 +33,8 @@ class MirrorManager:
         }
 
         # Mirror caching
-        self._cached_mirror: Optional[str] = None
-        self._cache_time: Optional[float] = None
+        self._cached_mirror: str | None = None
+        self._cache_time: float | None = None
         self._cache_duration: int = 3600  # 1 hour TTL
 
         # Failed mirror blacklist (mirror_url -> failure_time)
@@ -164,7 +163,7 @@ class MirrorManager:
 
     def _test_mirrors_parallel(
         self, mirrors: list[str], allow_403: bool = False, max_workers: int = 5
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Test multiple mirrors in parallel, return first working one.
 

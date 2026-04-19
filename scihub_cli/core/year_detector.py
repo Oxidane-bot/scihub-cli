@@ -2,7 +2,6 @@
 Publication year detection using Crossref API.
 """
 
-from typing import Optional
 
 import requests
 
@@ -17,12 +16,12 @@ class YearDetector:
 
     def __init__(self):
         self.base_url = "https://api.crossref.org/works"
-        self.cache: dict[str, Optional[int]] = {}
+        self.cache: dict[str, int | None] = {}
         self.session = requests.Session()
         contact_email = settings.email or "scihub-cli@example.invalid"
         self.session.headers.update({"User-Agent": f"scihub-cli/1.0 (mailto:{contact_email})"})
 
-    def get_year(self, doi: str) -> Optional[int]:
+    def get_year(self, doi: str) -> int | None:
         """
         Get publication year for a DOI.
 

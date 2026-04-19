@@ -3,7 +3,6 @@ Abstract base class for paper sources.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
 
 class PaperSource(ABC):
@@ -29,7 +28,7 @@ class PaperSource(ABC):
         pass
 
     @abstractmethod
-    def get_pdf_url(self, doi: str) -> Optional[str]:
+    def get_pdf_url(self, doi: str) -> str | None:
         """
         Get the direct PDF download URL for a given DOI.
 
@@ -41,7 +40,7 @@ class PaperSource(ABC):
         """
         pass
 
-    def get_metadata(self, doi: str) -> Optional[dict[str, str]]:
+    def get_metadata(self, doi: str) -> dict[str, str] | None:
         """
         Get metadata for a paper (optional, not all sources provide this).
 

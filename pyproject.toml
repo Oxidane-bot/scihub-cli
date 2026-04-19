@@ -46,9 +46,16 @@ dev = [
     "pytest>=9.0.0",
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires network access (set SCIHUB_CLI_RUN_NETWORK_TESTS=1)",
+    "e2e: requires installed package (set SCIHUB_CLI_RUN_INTEGRATION=1)",
+]
+addopts = "-m 'not integration and not e2e'"
+
 [tool.ruff]
 # Python version
-target-version = "py39"
+target-version = "py310"
 
 # Line length
 line-length = 100

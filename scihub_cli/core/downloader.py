@@ -2,15 +2,24 @@
 Core downloader implementation with single responsibility.
 """
 
-import re
 import threading
 import time
-from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, urlparse, urlunparse
+from collections.abc import Callable
+from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
 from ..config.auto_tuning import _merge_domain_list, load_auto_tuning
+from ..config.domains import (
+    ACADEMIC_HOST_MARKERS,
+    FAST_FAIL_LIGHTWEIGHT_BYPASS_HOSTS,
+    FAST_FAIL_PAGE_BYPASS_HOSTS,
+    FAST_FAIL_PAGE_BYPASS_SCIHUB_MARKERS,
+    FAST_FAIL_SKIP_CHALLENGE_DOWNLOAD_HOSTS,
+    FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS,
+    NON_ACADEMIC_HOST_MARKERS,
+)
 from ..config.settings import settings
 from ..network.session import BasicSession
 from ..utils.logging import get_logger
@@ -20,6 +29,19 @@ from ..utils.retry import (
     RetryableError,
     classify_http_error,
     retry_with_classification,
+)
+from .challenge_detection import (
+    derive_alternate_pdf_urls,
+    derive_landing_prefetch_url,
+    is_akamai_access_denied_html,
+    is_auth_or_paywall_html,
+    is_challenge_html,
+    is_hard_challenge_block_html,
+    is_scihub_host,
+    looks_like_pdf_download_path,
+    normalize_download_url,
+    normalize_recovery_url,
+    should_fast_fail_probe_403_html,
 )
 from .pdf_link_extractor import extract_ranked_pdf_candidates
 
@@ -46,160 +68,13 @@ class HTMLResponseError(PermanentError):
 class FileDownloader:
     """Handles pure file downloading operations."""
 
-    _FAST_FAIL_LIGHTWEIGHT_BYPASS_HOSTS = (
-        "mdpi.com",
-        "mdpi-res.com",
-        "seas.upenn.edu",
-        "zhaw.ch",
-        "repository.uantwerpen.be",
-        "orbi.uliege.be",
-        "pangea.stanford.edu",
-        "elib.dlr.de",
-        "sagepub.com",
-        "asiacleanenergyforum.adb.org",
-        "cathi.uacj.mx",
-        "ijltemas.in",
-        "asmedigitalcollection.asme.org",
-        "durham-repository.worktribe.com",
-        "orbit.dtu.dk",
-        "researchers.mq.edu.au",
-        "papers.ssrn.com",
-        "link.springer.com",
-        "idp.springer.com",
-        "onlinelibrary.wiley.com",
-        "academic.oup.com",
-        "www.cambridge.org",
-    )
-    _FAST_FAIL_SKIP_CHALLENGE_DOWNLOAD_HOSTS = (
-        "sciencedirect.com",
-        "researchgate.net",
-        "academia.edu",
-        "sk.sagepub.com",
-        "ideas.repec.org",
-        "scispace.com",
-        "ieeexplore.ieee.org",
-        "onlinelibrary.wiley.com",
-        "tandfonline.com",
-        "academic.oup.com",
-        "downloads.hindawi.com",
-    )
-    _FAST_FAIL_PAGE_BYPASS_HOSTS = (
-        "mdpi.com",
-        "doi.org",
-        "journals.sagepub.com",
-        "papers.ssrn.com",
-        "onlinelibrary.wiley.com",
-        "asmedigitalcollection.asme.org",
-        "durham-repository.worktribe.com",
-    )
-    _FAST_FAIL_PAGE_BYPASS_SCIHUB_MARKERS = (
-        "sci-hub.",
-    )
-    _FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS = (
-        "academia.edu",
-        "sk.sagepub.com",
-        "methods.sagepub.com",
-    )
-    _ACADEMIC_HOST_MARKERS = (
-        "arxiv.org",
-        "ncbi.nlm.nih.gov",
-        "pmc.ncbi.nlm.nih.gov",
-        "sciencedirect.com",
-        "springer.com",
-        "nature.com",
-        "wiley.com",
-        "onlinelibrary.wiley.com",
-        "tandfonline.com",
-        "sagepub.com",
-        "mdpi.com",
-        "ieeexplore.ieee.org",
-        "acm.org",
-        "jstor.org",
-        "scielo.org",
-        "researchgate.net",
-        "semanticscholar.org",
-        "doaj.org",
-        "hindawi.com",
-        "frontiersin.org",
-        "doi.org",
-        "dx.doi.org",
-        "ieee.org",
-        "sdewes.org",
-        "energy.gov",
-        "ssrn.com",
-        "zenodo.org",
-        "hal.science",
-        "europepmc.org",
-        "link.springer.com",
-        "ideas.repec.org",
-        "asme.org",
-        "intechopen.com",
-        "dergipark.org.tr",
-        "iaea.org",
-        "ugent.be",
-        "ceon.rs",
-        "scirp.org",
-    )
-    _NON_ACADEMIC_HOST_MARKERS = (
-        "tiktok.com",
-        "instagram.com",
-        "facebook.com",
-        "x.com",
-        "twitter.com",
-        "youtube.com",
-        "youtu.be",
-        "reddit.com",
-        "bbc.com",
-        "cnn.com",
-        "abcnews.com",
-        "consumerreports.org",
-        "creativebloq.com",
-        "medium.com",
-        "luxuryestate.com",
-        "campaignlive.com",
-        "campaignasia.com",
-        "healthline.com",
-        "hbr.org",
-        "carscoops.com",
-        "thisismoney.co.uk",
-        "topgear.com",
-        "tesla.com",
-        "jaguar.com",
-        "wikipedia.org",
-        "thestreet.com",
-        "washingtonstand.com",
-        "thetrailblazer.co.uk",
-        "sky.com",
-        "investors.com",
-        "businessinsider.com",
-        "bloomberg.com",
-        "cnbc.com",
-        "fortune.com",
-        "britannica.com",
-        "merriam-webster.com",
-        "finance.yahoo.com",
-        "motortrend.com",
-        "creativeboom.com",
-        "365dm.com",
-        "x666.me",
-        "brandvm.com",
-        "cdotimes.com",
-        "nikkeibizruptors.com",
-        "globalspec.com",
-        "yahoo.com",
-        "imgix.net",
-        "academia-photos.com",
-        "jlaforums.com",
-        "avanzaagency.com",
-        "thesiliconreview.com",
-        "mediawatcher.ai",
-        "nielseniq.com",
-        "autocar.co.uk",
-        "forbes.com",
-        "reuters.com",
-        "euronews.com",
-        "slidesharecdn.com",
-    )
+    _FAST_FAIL_LIGHTWEIGHT_BYPASS_HOSTS = FAST_FAIL_LIGHTWEIGHT_BYPASS_HOSTS
+    _FAST_FAIL_SKIP_CHALLENGE_DOWNLOAD_HOSTS = FAST_FAIL_SKIP_CHALLENGE_DOWNLOAD_HOSTS
+    _FAST_FAIL_PAGE_BYPASS_HOSTS = FAST_FAIL_PAGE_BYPASS_HOSTS
+    _FAST_FAIL_PAGE_BYPASS_SCIHUB_MARKERS = FAST_FAIL_PAGE_BYPASS_SCIHUB_MARKERS
+    _FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS = FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS
+    _ACADEMIC_HOST_MARKERS = ACADEMIC_HOST_MARKERS
+    _NON_ACADEMIC_HOST_MARKERS = NON_ACADEMIC_HOST_MARKERS
     _FAST_FAIL_DEADLINE_MIN_SECONDS_FOR_GRACE = 5.0
     _FAST_FAIL_DEADLINE_PROGRESS_MIN_BYTES = 256 * 1024
     _FAST_FAIL_DEADLINE_PROGRESS_GRACE_SECONDS = 6.0
@@ -207,7 +82,7 @@ class FileDownloader:
 
     def __init__(
         self,
-        session: Optional[requests.Session] = None,
+        session: requests.Session | None = None,
         timeout: int = None,
         fast_fail: bool = False,
         retries: int | None = None,
@@ -368,11 +243,11 @@ class FileDownloader:
         self,
         url: str,
         output_path: str,
-        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+        progress_callback: Callable[[int, int | None], None] | None = None,
         *,
         _html_recovery_depth: int = 0,
         _visited_urls: set[str] | None = None,
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """
         Download a file from URL to output path with automatic retry.
 
@@ -384,7 +259,7 @@ class FileDownloader:
             Tuple of (success: bool, error_msg: Optional[str])
         """
         logger.info(f"Downloading to {output_path}")
-        url = self._normalize_download_url(url)
+        url = normalize_download_url(url)
         # Ensure output directory exists before attempting download
         import os
 
@@ -402,7 +277,7 @@ class FileDownloader:
             return False, error_msg
 
         visited_urls = _visited_urls if _visited_urls is not None else set()
-        normalized_url = self._normalize_recovery_url(url)
+        normalized_url = normalize_recovery_url(url)
         if normalized_url:
             visited_urls.add(normalized_url)
 
@@ -412,7 +287,7 @@ class FileDownloader:
         try:
 
             def _attempt_download():
-                landing_url = self._derive_landing_prefetch_url(url)
+                landing_url = derive_landing_prefetch_url(url)
                 if landing_url:
                     self._prefetch_landing_page(
                         landing_url=landing_url,
@@ -564,7 +439,7 @@ class FileDownloader:
         *,
         url: str,
         output_path: str,
-        progress_callback: Optional[Callable[[int, Optional[int]], None]],
+        progress_callback: Callable[[int, int | None], None] | None,
         error_msg: str,
         visited_urls: set[str],
         _html_recovery_depth: int,
@@ -572,11 +447,11 @@ class FileDownloader:
         lowered = (error_msg or "").lower()
         if not any(token in lowered for token in ("403", "server returned html")):
             return False
-        alternates = self._derive_alternate_pdf_urls(url)
+        alternates = derive_alternate_pdf_urls(url)
         if not alternates:
             return False
         for candidate in alternates:
-            normalized = self._normalize_recovery_url(candidate)
+            normalized = normalize_recovery_url(candidate)
             if not normalized or normalized in visited_urls:
                 continue
             visited_urls.add(normalized)
@@ -593,106 +468,6 @@ class FileDownloader:
                 return True
         return False
 
-    @staticmethod
-    def _derive_alternate_pdf_urls(url: str) -> list[str]:
-        try:
-            parsed = urlparse((url or "").strip())
-        except ValueError:
-            return False
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return []
-        host = parsed.netloc.lower()
-        path = parsed.path or ""
-        lowered_path = path.lower()
-        query_params = parse_qs(parsed.query or "")
-
-        out: list[str] = []
-
-        if (
-            "/server/api/core/bitstreams/" in lowered_path or "/bitstreams/" in lowered_path
-        ) and "/content" not in lowered_path:
-            out.append(urlunparse(parsed._replace(path=path.rstrip("/") + "/content", query="")))
-
-        if "onlinelibrary.wiley.com" in host:
-            if any(token in lowered_path for token in ("/doi/pdf", "/doi/epdf", "/doi/pdfdirect")):
-                return []
-            match = re.search(r"/doi/(?:pdfdirect|pdf|epdf|abs|full)/(.+)", path, re.I)
-            if match:
-                doi = match.group(1).strip().strip("/")
-                if doi and doi.startswith("10.") and "/" in doi:
-                    out.extend(
-                        [
-                            f"https://onlinelibrary.wiley.com/doi/epdf/{doi}",
-                            f"https://onlinelibrary.wiley.com/doi/pdf/{doi}",
-                            f"https://onlinelibrary.wiley.com/doi/pdfdirect/{doi}",
-                        ]
-                    )
-            match = re.search(r"/doi/(10\\.[^/]+/[^/?#]+)(?:/|$)", path, re.I)
-            if match:
-                doi = match.group(1).strip().strip("/")
-                if doi and "/" in doi:
-                    out.extend(
-                        [
-                            f"https://onlinelibrary.wiley.com/doi/epdf/{doi}",
-                            f"https://onlinelibrary.wiley.com/doi/pdf/{doi}",
-                            f"https://onlinelibrary.wiley.com/doi/pdfdirect/{doi}",
-                        ]
-                    )
-
-        if "tandfonline.com" in host:
-            if any(token in lowered_path for token in ("/doi/pdf", "/doi/epdf")):
-                return []
-            match = re.search(r"/doi/(?:abs|full|pdf)/(.+)", path, re.I)
-            if match:
-                doi = match.group(1).strip().strip("/")
-                if doi and doi.startswith("10.") and "/" in doi:
-                    out.append(f"https://www.tandfonline.com/doi/pdf/{doi}?download=true")
-            match = re.search(r"/doi/(10\\.[^/]+/[^/?#]+)(?:/|$)", path, re.I)
-            if match:
-                doi = match.group(1).strip().strip("/")
-                if doi and "/" in doi:
-                    out.append(f"https://www.tandfonline.com/doi/pdf/{doi}?download=true")
-
-        if "papers.ssrn.com" in host and "/sol3/delivery.cfm" in lowered_path:
-            abstract_id = (
-                (query_params.get("abstractid") or query_params.get("abstract_id") or [None])[0]
-            )
-            if abstract_id:
-                base = f"https://papers.ssrn.com/sol3/Delivery.cfm?abstractid={abstract_id}"
-                out.extend(
-                    [
-                        base,
-                        f"{base}&type=2",
-                        f"{base}&download=1",
-                    ]
-                )
-
-        if "ncbi.nlm.nih.gov" in host or "pmc.ncbi.nlm.nih.gov" in host:
-            match = re.search(r"/pmc/articles/(pmc\\d+)", lowered_path)
-            if match:
-                pmc_id = match.group(1).upper()
-                out.append(
-                    f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf"
-                )
-
-        if "europepmc.org" in host and "/articles/pmc" in lowered_path:
-            match = re.search(r"/articles/(pmc\\d+)", lowered_path)
-            if match:
-                pmc_id = match.group(1).upper()
-                out.append(
-                    f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf"
-                )
-
-        # Deduplicate while preserving order
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for candidate in out:
-            if candidate == url or candidate in seen:
-                continue
-            seen.add(candidate)
-            deduped.append(candidate)
-        return deduped
-
     def _collect_html_events_for_recovery(self) -> list[dict[str, Any]]:
         events = getattr(self._trace_local, "download_html_events", None)
         if not isinstance(events, list):
@@ -704,7 +479,7 @@ class FileDownloader:
             html = event.get("html")
             if not isinstance(html, str) or not html.strip():
                 continue
-            if self._should_skip_html_recovery_event(event):
+            if is_scihub_host(event.get("url", "")):
                 continue
             out.append(event)
         return out
@@ -713,7 +488,7 @@ class FileDownloader:
         self,
         *,
         output_path: str,
-        progress_callback: Optional[Callable[[int, Optional[int]], None]],
+        progress_callback: Callable[[int, int | None], None] | None,
         html_events: list[dict[str, Any]],
         visited_urls: set[str],
         next_depth: int,
@@ -732,7 +507,7 @@ class FileDownloader:
             for score, candidate in extract_ranked_pdf_candidates(html, base_url):
                 if score < self._html_recovery_min_score:
                     continue
-                normalized = self._normalize_recovery_url(candidate)
+                normalized = normalize_recovery_url(candidate)
                 if not normalized or normalized in visited_urls:
                     continue
                 if normalized not in order:
@@ -778,7 +553,7 @@ class FileDownloader:
         self,
         *,
         output_path: str,
-        progress_callback: Optional[Callable[[int, Optional[int]], None]],
+        progress_callback: Callable[[int, int | None], None] | None,
         html_events: list[dict[str, Any]],
         visited_urls: set[str],
     ) -> tuple[bool, str | None]:
@@ -798,7 +573,7 @@ class FileDownloader:
             for score, candidate in extract_ranked_pdf_candidates(html, base_url):
                 if score < self._fast_fail_html_recovery_min_score:
                     continue
-                normalized = self._normalize_recovery_url(candidate)
+                normalized = normalize_recovery_url(candidate)
                 if not normalized or normalized in visited_urls:
                     continue
                 if normalized not in order:
@@ -840,44 +615,12 @@ class FileDownloader:
             f"fast-fail HTML recovery tried {len(errors)} extracted candidate URLs: {detail}",
         )
 
-    @staticmethod
-    def _normalize_recovery_url(url: str) -> str | None:
-        try:
-            parsed = urlparse((url or "").strip())
-        except ValueError:
-            return None
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return None
-        cleaned_path = re.sub(r"(\\.pdf)+$", ".pdf", parsed.path or "", flags=re.I)
-        if cleaned_path:
-            lower = cleaned_path.lower()
-            idx = lower.find(".pdf")
-            if idx != -1:
-                cleaned_path = cleaned_path[: idx + 4]
-        return urlunparse(parsed._replace(path=cleaned_path, fragment=""))
-
-    def _should_skip_html_recovery_event(self, event: dict[str, Any]) -> bool:
-        url = event.get("url")
-        html = event.get("html")
-        if not isinstance(url, str) or not isinstance(html, str):
-            return True
-        return bool(self._is_scihub_host(url))
-
-    @staticmethod
-    def _is_scihub_host(url: str) -> bool:
-        try:
-            parsed = urlparse((url or "").strip())
-        except ValueError:
-            return False
-        host = parsed.netloc.lower()
-        return "sci-hub" in host
-
     def _try_fast_fail_lightweight_bypass(
         self,
         *,
         url: str,
         output_path: str,
-        progress_callback: Optional[Callable[[int, Optional[int]], None]],
+        progress_callback: Callable[[int, int | None], None] | None,
         trigger_error: str,
     ) -> tuple[bool, str | None]:
         if not self._should_try_fast_fail_lightweight_bypass(url, trigger_error):
@@ -964,7 +707,7 @@ class FileDownloader:
                         if event.get("status_code") != 403:
                             continue
                         html = event.get("html")
-                        if isinstance(html, str) and self._is_akamai_access_denied_html(html):
+                        if isinstance(html, str) and is_akamai_access_denied_html(html):
                             # Hard block: avoid wasting time on duplicate retries.
                             return False
                         break
@@ -996,7 +739,7 @@ class FileDownloader:
             if event.get("status_code") != 403:
                 continue
             html = event.get("html")
-            if isinstance(html, str) and self._is_akamai_access_denied_html(html):
+            if isinstance(html, str) and is_akamai_access_denied_html(html):
                 logger.info("Fast-fail detected Akamai hard block; bypass skipped")
                 return True
             break
@@ -1016,7 +759,7 @@ class FileDownloader:
             if response.status_code == 403:
                 content_type = (response.headers.get("Content-Type", "") or "").lower()
                 response_text = response.text if isinstance(response.text, str) else ""
-                if "html" in content_type and self._should_fast_fail_probe_403_html(response_text):
+                if "html" in content_type and should_fast_fail_probe_403_html(response_text):
                     logger.debug(f"Probe got gated/challenge HTML on 403 for {url}; rejecting")
                     return False
                 logger.debug(f"Probe got 403 for {url}; treating as potentially valid PDF")
@@ -1048,10 +791,10 @@ class FileDownloader:
         self,
         url: str,
         output_path: str,
-        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+        progress_callback: Callable[[int, int | None], None] | None = None,
         *,
         deadline_ts: float | None = None,
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """
         Single download attempt with error classification.
 
@@ -1214,8 +957,8 @@ class FileDownloader:
         self,
         url: str,
         output_path: str,
-        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
-    ) -> tuple[bool, Optional[str]]:
+        progress_callback: Callable[[int, int | None], None] | None = None,
+    ) -> tuple[bool, str | None]:
         """Bypass Cloudflare challenges using cloudscraper."""
         try:
             import cloudscraper
@@ -1289,8 +1032,8 @@ class FileDownloader:
         self,
         url: str,
         output_path: str,
-        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
-    ) -> tuple[bool, Optional[str]]:
+        progress_callback: Callable[[int, int | None], None] | None = None,
+    ) -> tuple[bool, str | None]:
         """
         Bypass CDN protection using curl_cffi with browser impersonation.
 
@@ -1331,7 +1074,7 @@ class FileDownloader:
             # Use Chrome 110 impersonation - works well for most CDNs
             logger.debug(f"[curl_cffi] Downloading with Chrome 110 impersonation: {url}")
             session = cf_requests.Session()
-            landing_url = self._derive_landing_prefetch_url(url)
+            landing_url = derive_landing_prefetch_url(url)
             referer = landing_url or url
             if landing_url:
                 self._prefetch_landing_page_curl_cffi(
@@ -1406,7 +1149,7 @@ class FileDownloader:
         *,
         timeout_seconds: float | None = None,
         force_challenge_bypass: bool = False,
-    ) -> tuple[Optional[str], Optional[int]]:
+    ) -> tuple[str | None, int | None]:
         """
         Get HTML content from a URL with automatic curl_cffi fallback on 403.
 
@@ -1427,7 +1170,7 @@ class FileDownloader:
 
             # If we get 403, try curl_cffi bypass
             if response.status_code == 403:
-                if self._is_akamai_access_denied_html(response.text):
+                if is_akamai_access_denied_html(response.text):
                     logger.info(
                         "Detected Akamai access-denied hard block; skipping page bypass attempts"
                     )
@@ -1523,56 +1266,7 @@ class FileDownloader:
             return False
         path = (parsed.path or "").lower()
         query = (parsed.query or "").lower()
-        return self._looks_like_pdf_download_path(path=path, query=query)
-
-    @staticmethod
-    def _looks_like_pdf_download_path(*, path: str, query: str) -> bool:
-        return (
-            path.endswith(".pdf")
-            or ".pdf" in path
-            or ".pdf" in query
-            or "/pdf" in path
-            or "/download/" in path
-            or "/bitstream/" in path
-            or "/server/api/core/bitstreams/" in path
-        )
-
-    @classmethod
-    def _normalize_download_url(cls, url: str) -> str:
-        cleaned = (url or "").strip()
-        if not cleaned:
-            return cleaned
-        if cleaned.endswith("?"):
-            cleaned = cleaned[:-1]
-
-        try:
-            parsed = urlparse(cleaned)
-        except ValueError:
-            return cleaned
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return cleaned
-
-        host = parsed.netloc.lower()
-        path = parsed.path or ""
-        query = parsed.query or ""
-
-        if parsed.scheme == "http" and any(
-            marker in host
-            for marker in (
-                "mdpi.com",
-                "mdpi-res.com",
-                "res.mdpi.com",
-                "ieeexplore.ieee.org",
-            )
-        ):
-            parsed = parsed._replace(scheme="https")
-
-        if (
-            "mdpi.com" in host or "mdpi-res.com" in host or "res.mdpi.com" in host
-        ) and path.lower().endswith("/pdf") and not query:
-            parsed = parsed._replace(query="download=1")
-
-        return urlunparse(parsed)
+        return looks_like_pdf_download_path(path=path, query=query)
 
     @classmethod
     def _is_obvious_non_academic_host(cls, host: str) -> bool:
@@ -1611,7 +1305,7 @@ class FileDownloader:
         url: str,
         *,
         timeout_seconds: float | None = None,
-    ) -> tuple[Optional[str], Optional[int]]:
+    ) -> tuple[str | None, int | None]:
         """
         Fetch page content using cloudscraper to solve JS challenges.
 
@@ -1656,7 +1350,7 @@ class FileDownloader:
         url: str,
         *,
         timeout_seconds: float | None = None,
-    ) -> tuple[Optional[str], Optional[int]]:
+    ) -> tuple[str | None, int | None]:
         """
         Fetch page content using curl_cffi with browser impersonation.
 
@@ -1766,133 +1460,6 @@ class FileDownloader:
         hosts.add(host)
         return True
 
-    @classmethod
-    def _derive_landing_prefetch_url(cls, url: str) -> str | None:
-        parsed = urlparse((url or "").strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return None
-        host = parsed.netloc.lower()
-        path = parsed.path or ""
-        query = parse_qs(parsed.query or "")
-
-        if "mdpi.com" in host and "/pdf" in path:
-            landing_path = path.replace("/pdf", "")
-            return urlunparse(parsed._replace(path=landing_path, query=""))
-
-        if "sciencedirect.com" in host:
-            pii_match = re.search(r"/pii/([A-Z0-9]+)", path, flags=re.I)
-            if pii_match:
-                pii = pii_match.group(1)
-                landing_path = f"/science/article/pii/{pii}"
-                return urlunparse(parsed._replace(netloc="www.sciencedirect.com", path=landing_path, query=""))
-
-        if "onlinelibrary.wiley.com" in host and (
-            path.startswith("/doi/pdfdirect/") or path.startswith("/doi/pdf/")
-        ):
-            doi = path.split("/doi/", 1)[1].replace("pdfdirect/", "").replace("pdf/", "")
-            return urlunparse(parsed._replace(path=f"/doi/full/{doi}", query=""))
-
-        if "academic.oup.com" in host and (
-            "/article-pdf/doi/" in path or "/advance-article-pdf/doi/" in path
-        ):
-            parts = path.split("/doi/", 1)
-            if len(parts) == 2:
-                doi = parts[1].split("/", 1)[0]
-                return urlunparse(parsed._replace(path=f"/doi/{doi}", query=""))
-
-        if "papers.ssrn.com" in host:
-            abstract_id = (query.get("abstractid") or query.get("abstract_id") or [None])[0]
-            if abstract_id:
-                landing_path = "/sol3/papers.cfm"
-                landing_query = f"abstract_id={abstract_id}"
-                return urlunparse(parsed._replace(path=landing_path, query=landing_query))
-
-        if "tandfonline.com" in host and "/doi/pdf/" in path:
-            doi = path.split("/doi/pdf/", 1)[1]
-            return urlunparse(parsed._replace(path=f"/doi/full/{doi}", query=""))
-
-        return None
-
-    @classmethod
-    def _is_hard_challenge_block_html(cls, html: str) -> bool:
-        lowered = (html or "").lower()
-        return any(
-            token in lowered
-            for token in (
-                "attention required! | cloudflare",
-                "cloudflare ray id",
-                "cf-error-details",
-                "captcha.awswaf.com",
-                "captchascript.rendercaptcha",
-                "verify that you're not a robot",
-                "recaptcha/api.js",
-                "grecaptcha.render",
-            )
-        )
-
-    @staticmethod
-    def _is_akamai_access_denied_html(html: str) -> bool:
-        lowered = (html or "").lower()
-        return (
-            "access denied" in lowered
-            and "errors.edgesuite.net" in lowered
-            and "don't have permission to access" in lowered
-        )
-
-    @classmethod
-    def _is_challenge_html(cls, html: str) -> bool:
-        lowered = (html or "").lower()
-        return any(
-            token in lowered
-            for token in (
-                "just a moment...",
-                "enable javascript and cookies to continue",
-                "window._cf_chl_opt",
-                "/cdn-cgi/challenge-platform/",
-                "__cf_chl",
-            )
-        )
-
-    @classmethod
-    def _is_auth_or_paywall_html(cls, html: str) -> bool:
-        lowered = (html or "").lower()
-        return any(
-            token in lowered
-            for token in (
-                "sign up or log in to continue reading",
-                "institutional login",
-                "institutional access",
-                "openathens",
-                "shibboleth",
-                "subscribe",
-                "subscription",
-                "purchase this article",
-                "buy article",
-                "rent this article",
-                "get access",
-                "paywall",
-                "open-login-modal",
-                "download free pdf",
-                "subscribers only",
-                "ieee xplore login",
-                "currentpage:  'login'",
-                "apm_do_not_touch",
-                "/tspd/",
-                "osano-cookie-consent-xplore",
-                "recaptcha",
-                "purchase",
-                "buy this article",
-            )
-        )
-
-    @classmethod
-    def _should_fast_fail_probe_403_html(cls, html: str) -> bool:
-        return (
-            cls._is_hard_challenge_block_html(html)
-            or cls._is_challenge_html(html)
-            or cls._is_auth_or_paywall_html(html)
-        )
-
     def _should_attempt_fast_fail_page_bypass(self, url: str, html: str) -> bool:
         parsed = urlparse((url or "").strip())
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -1903,10 +1470,10 @@ class FileDownloader:
             return False
         if not is_scihub and not any(marker in host for marker in self._FAST_FAIL_PAGE_BYPASS_HOSTS):
             return False
-        if self._is_hard_challenge_block_html(html) and not is_scihub:
+        if is_hard_challenge_block_html(html) and not is_scihub:
             return False
-        if self._is_auth_or_paywall_html(html):
+        if is_auth_or_paywall_html(html):
             return False
-        if self._is_challenge_html(html):
+        if is_challenge_html(html):
             return True
-        return is_scihub and self._is_hard_challenge_block_html(html)
+        return is_scihub and is_hard_challenge_block_html(html)

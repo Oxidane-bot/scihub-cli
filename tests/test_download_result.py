@@ -510,7 +510,9 @@ def test_url_input_tries_url_specific_sources_before_doi_fallback(tmp_path: Path
 def test_extract_identifier_from_line_preserves_plain_doi_url():
     landing_url = "https://doi.org/10.1111/rmir.12114"
 
-    extracted = SciHubClient._extract_identifier_from_line(landing_url)
+    from scihub_cli.core.identifier_classifier import extract_identifier_from_line
+
+    extracted = extract_identifier_from_line(landing_url)
 
     assert extracted == landing_url
 

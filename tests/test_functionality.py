@@ -19,6 +19,8 @@ from scihub_cli.sources.arxiv_source import ArxivSource
 from scihub_cli.sources.core_source import CORESource
 from scihub_cli.sources.unpaywall_source import UnpaywallSource
 
+pytestmark = pytest.mark.integration
+
 
 def _allow_scihub_tests() -> bool:
     return os.getenv("SCIHUB_CLI_ALLOW_SCIHUB", "").lower() in {"1", "true", "yes"}

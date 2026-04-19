@@ -3,8 +3,9 @@ Retry mechanism utilities for Sci-Hub CLI.
 """
 
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, Optional
+from typing import Any
 
 from ..utils.logging import get_logger
 
@@ -55,7 +56,7 @@ class APIRetryConfig(RetryConfig):
 
 
 def with_retry(
-    retry_config: RetryConfig, exceptions: tuple = (Exception,), logger_name: Optional[str] = None
+    retry_config: RetryConfig, exceptions: tuple = (Exception,), logger_name: str | None = None
 ):
     """Decorator for adding retry logic to functions."""
 

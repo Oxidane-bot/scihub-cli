@@ -2,7 +2,7 @@
 Unpaywall source implementation.
 """
 
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -52,7 +52,7 @@ class UnpaywallSource(PaperSource):
         self.session.mount("http://", adapter)
 
         # Metadata caching
-        self._metadata_cache: dict[str, Optional[dict]] = {}
+        self._metadata_cache: dict[str, dict | None] = {}
 
         # Retry configuration for API calls
         self.retry_config = APIRetryConfig()
@@ -69,7 +69,7 @@ class UnpaywallSource(PaperSource):
         """Unpaywall can query any DOI, but only returns OA articles."""
         return doi.startswith("10.")
 
-    def get_pdf_url(self, doi: str) -> Optional[str]:
+    def get_pdf_url(self, doi: str) -> str | None:
         """
         Get PDF download URL from Unpaywall using cached metadata.
 
@@ -115,7 +115,7 @@ class UnpaywallSource(PaperSource):
         query = (parsed.query or "").lower()
         return path.endswith(".pdf") or ".pdf" in query or "/pdf" in path or "pdfft" in path
 
-    def get_metadata(self, doi: str) -> Optional[dict[str, Any]]:
+    def get_metadata(self, doi: str) -> dict[str, Any] | None:
         """
         Get metadata from Unpaywall (returns cached if available).
 
@@ -128,11 +128,11 @@ class UnpaywallSource(PaperSource):
         """
         return self._fetch_metadata(doi)
 
-    def get_cached_metadata(self, doi: str) -> Optional[dict[str, Any]]:
+    def get_cached_metadata(self, doi: str) -> dict[str, Any] | None:
         """Return cached metadata without triggering a network request."""
         return self._metadata_cache.get(doi)
 
-    def _fetch_metadata(self, doi: str) -> Optional[dict[str, str]]:
+    def _fetch_metadata(self, doi: str) -> dict[str, str] | None:
         """
         Fetch and cache metadata from Unpaywall API.
 
@@ -168,7 +168,7 @@ class UnpaywallSource(PaperSource):
             # Don't cache transient failures that exhausted retries
             return None
 
-    def _fetch_from_api(self, doi: str) -> Optional[dict[str, str]]:
+    def _fetch_from_api(self, doi: str) -> dict[str, str] | None:
         """
         Single API fetch attempt with error classification.
 

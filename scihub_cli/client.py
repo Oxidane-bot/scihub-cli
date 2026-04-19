@@ -5,17 +5,33 @@ Main Sci-Hub client providing high-level interface with multi-source support.
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from html import unescape
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 from urllib.parse import urlparse
 
+from .config.domains import (
+    ACADEMIC_HOST_HINTS,
+    ACADEMIC_PATH_HINTS,
+    NON_ACADEMIC_HOST_EXTRA_MARKERS,
+    NON_ACADEMIC_PATH_HINTS,
+)
 from .config.settings import settings
 from .converters.pdf_to_md import PdfToMarkdownConverter
 from .core.doi_processor import DOIProcessor
 from .core.downloader import FileDownloader
 from .core.file_manager import FileManager
+from .core.identifier_classifier import (
+    extract_identifier_from_line,
+    is_probably_academic_identifier,
+    is_retryable_identifier,
+    select_best_identifier_variant,
+    select_retry_identifier,
+    should_fast_fail_url,
+    should_retry_sources_after_download_failure,
+)
 from .core.mirror_manager import MirrorManager
 from .core.parser import ContentParser
 from .core.source_manager import SourceManager
@@ -44,129 +60,10 @@ logger = get_logger(__name__)
 class SciHubClient:
     """Main client interface with multi-source support (Sci-Hub, Unpaywall, arXiv, CORE)."""
 
-    _ACADEMIC_HOST_HINTS = (
-        "journal",
-        "journals",
-        "research",
-        "scholar",
-        "library",
-        "archive",
-        "repository",
-        "repo",
-        "eprints",
-        "preprints",
-        "university",
-        "univ",
-        "institute",
-        "college",
-        "faculty",
-        "campus",
-        "preprint",
-        "arxiv",
-        "academic",
-        "dtu",
-    )
-    _ACADEMIC_ONLY_EXTRA_NON_ACADEMIC_HOST_MARKERS = (
-        "rebelliongroup.com",
-        "themodems.com",
-        "bruceturkel.com",
-        "onclusive.com",
-        "evdances.com",
-        "civicbrand.com",
-        "theguardian.com",
-        "english.stackexchange.com",
-        "getflamingo.com",
-        "s100.copyright.com",
-        "formpl.us",
-        "ichef.bbci.co.uk",
-        "media.jaguarlandrover.com",
-        "stockmarketwatch.com",
-        "dictionary.cambridge.org",
-        "scribd.com",
-        "linkedin.com",
-        "dokumen.pub",
-        "mckinsey.com",
-        "autoweek.com",
-        "cdn.shopify.com",
-        "hbr.org",
-        "slideshare.net",
-        "apnews.com",
-        "caranddriver.com",
-        "pinterest.com",
-        "nationwidevehiclecontracts.co.uk",
-        "sportsbusinessdaily.com",
-        "marketresearch.com",
-        "media.post.rvohealth.io",
-        "historyofluxury.com",
-        "whitehouse.gov",
-        "marketingdive.com",
-        "digitalcommerce360.com",
-        "growprogress.ai",
-        "angelone.in",
-        "univdatos.com",
-        "substack.com",
-    )
-    _ACADEMIC_PATH_HINTS = (
-        "/doi/",
-        "/article",
-        "/articles/",
-        "/paper",
-        "/papers/",
-        "/manuscript",
-        "/preprint",
-        "/pdf",
-        "/abs/",
-        "/abstract",
-        "/fulltext",
-        "/bitstream/",
-        "/handle/",
-        "/eprint/",
-        "/eprints/",
-        "/etd/",
-        "/thesis",
-        "/dissertation",
-        "/conference",
-        "/conferences",
-        "/ojs/",
-        "/dspace/",
-        "/record/",
-        "blobtype=pdf",
-        "download=true",
-    )
-    _NON_ACADEMIC_PATH_HINTS = (
-        "/about",
-        "/about-us",
-        "/account",
-        "/author",
-        "/authors",
-        "/blog",
-        "/careers",
-        "/contact",
-        "/events",
-        "/help",
-        "/home",
-        "/index",
-        "/jobs",
-        "/login",
-        "/media",
-        "/news",
-        "/press",
-        "/privacy",
-        "/search",
-        "/signup",
-        "/sign-up",
-        "/subscribe",
-        "/terms",
-        "/policy",
-        "/logo",
-        "/image",
-        "/images",
-        "/gallery",
-        "/thumbnail",
-        "search=",
-        "query=",
-        "q=",
-    )
+    _ACADEMIC_HOST_HINTS = ACADEMIC_HOST_HINTS
+    _ACADEMIC_ONLY_EXTRA_NON_ACADEMIC_HOST_MARKERS = NON_ACADEMIC_HOST_EXTRA_MARKERS
+    _ACADEMIC_PATH_HINTS = ACADEMIC_PATH_HINTS
+    _NON_ACADEMIC_PATH_HINTS = NON_ACADEMIC_PATH_HINTS
 
     def __init__(
         self,
@@ -310,12 +207,13 @@ class SciHubClient:
                 sources=sources,
                 year_threshold=settings.year_threshold,
                 enable_year_routing=settings.enable_year_routing,
+                max_workers=2,
             )
         else:
             self.source_manager = source_manager
 
     def download_paper(
-        self, identifier: str, progress_callback: Optional[ProgressCallback] = None
+        self, identifier: str, progress_callback: ProgressCallback | None = None
     ) -> DownloadResult:
         """
         Download a paper given its DOI or URL.
@@ -324,14 +222,14 @@ class SciHubClient:
         No coarse-grained retry at this level.
         """
         try:
-            cleaned_identifier = self._extract_identifier_from_line(identifier)
+            cleaned_identifier = extract_identifier_from_line(identifier)
             if cleaned_identifier:
                 identifier = cleaned_identifier
 
             doi = self.doi_processor.normalize_doi(identifier)
             logger.info(f"Downloading paper: {doi}")
 
-            if self.fast_fail and self._should_fast_fail_url(identifier, doi):
+            if self.fast_fail and should_fast_fail_url(identifier, doi):
                 error = "Fast-fail: non-academic or non-document URL"
                 logger.error(error)
                 return DownloadResult(
@@ -359,7 +257,7 @@ class SciHubClient:
         self,
         identifier: str,
         normalized_identifier: str,
-        progress_callback: Optional[ProgressCallback] = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> DownloadResult:
         """
         Single download attempt using multi-source manager.
@@ -381,12 +279,12 @@ class SciHubClient:
         def _build_result(
             *,
             success: bool,
-            file_path: Optional[str] = None,
-            file_size: Optional[int] = None,
-            metadata: Optional[dict] = None,
-            source: Optional[str] = None,
-            download_url: Optional[str] = None,
-            error: Optional[str] = None,
+            file_path: str | None = None,
+            file_size: int | None = None,
+            metadata: dict | None = None,
+            source: str | None = None,
+            download_url: str | None = None,
+            error: str | None = None,
             md_path: str | None = None,
             md_success: bool | None = None,
             md_error: str | None = None,
@@ -441,7 +339,7 @@ class SciHubClient:
         progress_state = {"bytes": 0, "total": None}
         active_download_url = {"url": download_url}
 
-        def _handle_progress(bytes_downloaded: int, total_bytes: Optional[int]) -> None:
+        def _handle_progress(bytes_downloaded: int, total_bytes: int | None) -> None:
             progress_state["bytes"] = bytes_downloaded
             progress_state["total"] = total_bytes
             if progress_callback:
@@ -559,12 +457,12 @@ class SciHubClient:
             if (
                 fallback_round >= max_fallback_rounds
                 or not self.fast_fail
-                or not self._should_retry_sources_after_download_failure(error_msg or "")
+                or not should_retry_sources_after_download_failure(error_msg or "")
             ):
                 break
 
-            retry_identifier = self._select_retry_identifier(normalized_identifier, metadata)
-            if not self._is_retryable_identifier(retry_identifier):
+            retry_identifier = select_retry_identifier(normalized_identifier, metadata)
+            if not is_retryable_identifier(retry_identifier):
                 break
 
             if source:
@@ -647,7 +545,7 @@ class SciHubClient:
         identifier: str,
         normalized_identifier: str,
         html_snapshot_callback: Callable[[dict[str, Any]], None] | None = None,
-    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[dict[str, Any]]]:
+    ) -> tuple[str | None, dict | None, str | None, list[dict[str, Any]]]:
         """
         Query URL-specific handlers with the original input before falling back to the
         normalized DOI/identifier chain.
@@ -659,8 +557,8 @@ class SciHubClient:
                 lookup_candidates.append(cleaned)
 
         combined_attempts: list[dict[str, Any]] = []
-        combined_metadata: Optional[dict] = None
-        final_source: Optional[str] = None
+        combined_metadata: dict | None = None
+        final_source: str | None = None
 
         for lookup_identifier in lookup_candidates:
             query_result = self._query_source_manager(
@@ -686,7 +584,7 @@ class SciHubClient:
         html_snapshot_callback: Callable[[dict[str, Any]], None] | None = None,
         exclude_sources: set[str] | None = None,
         force_sequential: bool = False,
-    ) -> tuple[Optional[str], Optional[dict], Optional[str], list[dict[str, Any]]]:
+    ) -> tuple[str | None, dict | None, str | None, list[dict[str, Any]]]:
         """Query the configured source manager while preserving trace output when available."""
         if hasattr(self.source_manager, "get_pdf_url_with_metadata_and_trace"):
             return self.source_manager.get_pdf_url_with_metadata_and_trace(
@@ -922,7 +820,7 @@ class SciHubClient:
             return str(md_path), False, error or "Markdown conversion failed"
         return str(md_path), True, None
 
-    def _generate_filename(self, doi: str, metadata: Optional[dict]) -> str:
+    def _generate_filename(self, doi: str, metadata: dict | None) -> str:
         """
         Generate filename from metadata or DOI.
 
@@ -955,7 +853,7 @@ class SciHubClient:
         self,
         input_file: str,
         parallel: int = None,
-        progress_callback: Optional[ProgressCallback] = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> list[DownloadResult]:
         """Download papers from a file containing DOIs or URLs."""
         parallel = parallel or settings.parallel
@@ -975,7 +873,7 @@ class SciHubClient:
             raw_line = (line or "").strip()
             if not raw_line or raw_line.startswith("#"):
                 continue
-            extracted = self._extract_identifier_from_line(raw_line)
+            extracted = extract_identifier_from_line(raw_line)
             if not extracted:
                 continue
             extracted_entries.append((raw_line, extracted))
@@ -986,9 +884,12 @@ class SciHubClient:
 
             def _should_keep(entry: tuple[str, str]) -> bool:
                 _, identifier = entry
-                if not self._is_probably_academic_identifier(identifier):
+                if not is_probably_academic_identifier(
+                    identifier,
+                    is_obvious_non_academic_host=self.downloader._is_obvious_non_academic_host,
+                ):
                     return False
-                return not (self.fast_fail and self._should_fast_fail_url(identifier, identifier))
+                return not (self.fast_fail and should_fast_fail_url(identifier, identifier))
 
             extracted_entries = [
                 (original, identifier)
@@ -1014,7 +915,7 @@ class SciHubClient:
         tasks: list[tuple[str, str, list[tuple[int, str, str, str]]]] = []
         for dedupe_key, entries in normalized_groups.items():
             variants = [cleaned_identifier for _, _original, cleaned_identifier, _normalized in entries]
-            representative = self._select_best_identifier_variant(variants)
+            representative = select_best_identifier_variant(variants)
             tasks.append((dedupe_key, representative, entries))
 
         logger.info(
@@ -1023,7 +924,7 @@ class SciHubClient:
             len(tasks),
         )
 
-        unique_results: list[Optional[DownloadResult]] = [None] * len(tasks)
+        unique_results: list[DownloadResult | None] = [None] * len(tasks)
 
         if parallel == 1 or len(tasks) <= 1:
             for i, (_normalized, identifier, _entries) in enumerate(tasks):
@@ -1053,7 +954,7 @@ class SciHubClient:
                     index, result = future.result()
                     unique_results[index] = result
 
-        results: list[Optional[DownloadResult]] = [None] * len(raw_identifiers)
+        results: list[DownloadResult | None] = [None] * len(raw_identifiers)
         for task_index, (_dedupe_key, _representative, entries) in enumerate(tasks):
             base_result = unique_results[task_index]
             if base_result is None:
@@ -1071,241 +972,6 @@ class SciHubClient:
         logger.info(f"Downloaded {successful}/{len(raw_identifiers)} papers")
 
         return results
-
-    @staticmethod
-    def _is_probably_academic_identifier(identifier: str) -> bool:
-        token = (identifier or "").strip()
-        if not token:
-            return False
-        lowered = token.lower()
-
-        # DOI and arXiv identifiers should always be considered academic.
-        if lowered.startswith("10.") or lowered.startswith("arxiv:"):
-            return True
-
-        parsed = urlparse(token)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            # Keep unknown non-URL identifiers to avoid dropping valid academic tokens.
-            return True
-
-        host = parsed.netloc.lower()
-        if FileDownloader._is_obvious_non_academic_host(host):
-            return False
-        if host.startswith("www."):
-            host = host[4:]
-        if any(
-            marker in host for marker in SciHubClient._ACADEMIC_ONLY_EXTRA_NON_ACADEMIC_HOST_MARKERS
-        ):
-            return False
-
-        path = (parsed.path or "").lower()
-        if path.endswith(
-            (
-                ".png",
-                ".jpg",
-                ".jpeg",
-                ".gif",
-                ".svg",
-                ".webp",
-                ".mp4",
-                ".mp3",
-                ".css",
-                ".js",
-                ".ico",
-            )
-        ):
-            return False
-
-        path_query = f"{path}?{(parsed.query or '').lower()}"
-        if any(hint in path_query for hint in SciHubClient._NON_ACADEMIC_PATH_HINTS):
-            return False
-
-        if host.endswith(".edu") or host.endswith(".gov") or ".ac." in host:
-            return True
-        if any(marker in host for marker in FileDownloader._ACADEMIC_HOST_MARKERS):
-            return True
-        if any(hint in host for hint in SciHubClient._ACADEMIC_HOST_HINTS):
-            return True
-
-        if any(hint in path_query for hint in SciHubClient._ACADEMIC_PATH_HINTS):
-            return True
-
-        # Unknown hosts without academic signals are treated as non-academic when
-        # academic-only filtering is enabled.
-        return bool(re.search(r"10\\.[0-9]{4,9}/[-._;()/:a-z0-9]+", path_query, flags=re.I))
-
-    @staticmethod
-    def _extract_identifier_from_line(line: str) -> str | None:
-        if not line:
-            return None
-
-        cleaned = line.strip()
-        if not cleaned:
-            return None
-
-        # Handle tab-delimited logs: take the last non-empty field.
-        if "\t" in cleaned:
-            parts = [part.strip() for part in cleaned.split("\t") if part.strip()]
-            if parts:
-                cleaned = parts[-1]
-
-        # Drop trailing status markers like "[failed:2]" or "[success:1]".
-        cleaned = re.sub(r"\s*\[[^\]]+\]\s*$", "", cleaned).strip()
-
-        # Handle space-delimited status tokens (e.g., "... success <doi>").
-        tokens = cleaned.split()
-        if len(tokens) >= 3 and tokens[-2].lower() in {"success", "failed", "skipped"}:
-            cleaned = tokens[-1]
-
-        # Prefer explicit PDF URLs when present.
-        pdf_url_match = re.search(r"https?://[^\s\"'<>]+?\.pdf(?:\?[^\s\"'<>]+)?", cleaned)
-        if pdf_url_match:
-            cleaned = pdf_url_match.group(0)
-        else:
-            # Preserve plain landing-page URLs as URLs so URL-specific sources can run
-            # before any DOI-based fallback.
-            if re.fullmatch(r"https?://[^\s\"'<>]+", cleaned):
-                cleaned = cleaned
-            else:
-                # Prefer DOI tokens when embedded in noisy lines.
-                doi_match = re.search(DOIProcessor.DOI_PATTERN, cleaned, flags=re.IGNORECASE)
-                if doi_match:
-                    cleaned = DOIProcessor._clean_doi_candidate(doi_match.group(0))
-                else:
-                    # arXiv identifiers commonly appear without scheme.
-                    arxiv_match = re.search(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b", cleaned)
-                    if arxiv_match:
-                        cleaned = arxiv_match.group(0)
-                    else:
-                        # If a URL is embedded in the line, prefer the first URL token.
-                        url_tokens = DOIProcessor._URL_TOKEN_PATTERN.findall(cleaned)
-                        if url_tokens:
-                            if len(url_tokens) > 1:
-                                cleaned = DOIProcessor._select_primary_url_token(cleaned).strip()
-                            else:
-                                cleaned = url_tokens[0].strip()
-
-        cleaned = DOIProcessor._strip_trailing_noise(cleaned).strip(")];,")
-        cleaned = cleaned.strip("[]()<>\"'")
-        if cleaned.lower().startswith("10.") and cleaned.lower().endswith(".pdf"):
-            cleaned = cleaned[:-4]
-        if cleaned.lower().startswith("10.") and cleaned.endswith("&"):
-            cleaned = cleaned[:-1]
-        return cleaned.strip() or None
-
-    @staticmethod
-    def _should_fast_fail_url(identifier: str, normalized_identifier: str) -> bool:
-        parsed = urlparse(normalized_identifier or "")
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return False
-
-        host = parsed.netloc.lower()
-        if host.startswith("www."):
-            host = host[4:]
-
-        path = (parsed.path or "").lower()
-        if path.endswith(
-            (
-                ".png",
-                ".jpg",
-                ".jpeg",
-                ".gif",
-                ".svg",
-                ".webp",
-                ".mp4",
-                ".mp3",
-                ".css",
-                ".js",
-                ".ico",
-            )
-        ):
-            return True
-
-        if re.search(DOIProcessor.DOI_PATTERN, normalized_identifier, flags=re.IGNORECASE):
-            return False
-
-        if path.endswith(".pdf"):
-            return False
-
-        if host.endswith("mdpi.com"):
-            mdpi_non_paper_prefixes = (
-                "/topics",
-                "/topic",
-                "/journal/",
-                "/special_issues",
-                "/topical_advisory_panel",
-                "/about",
-                "/editors",
-                "/authors",
-                "/user/",
-                "/institutional",
-                "/news",
-                "/events",
-                "/search",
-                "/susy",
-            )
-            if path == "/topics" or path.startswith(mdpi_non_paper_prefixes):
-                return True
-
-        if "sciencedirect.com" in host and "/craft/" in path:
-            return True
-
-        fast_fail_hosts = {
-            "researchgate.net",
-            "www.researchgate.net",
-            "academia.edu",
-            "www.academia.edu",
-            "sk.sagepub.com",
-            "www.sk.sagepub.com",
-            "susy.mdpi.com",
-            "www.susy.mdpi.com",
-        }
-        return host in fast_fail_hosts
-
-    @staticmethod
-    def _should_retry_sources_after_download_failure(error_msg: str) -> bool:
-        lowered = (error_msg or "").lower()
-        if not lowered:
-            return False
-        if "skipped non-academic" in lowered:
-            return False
-        return any(
-            token in lowered
-            for token in (
-                "access denied",
-                "403",
-                "html instead of pdf",
-                "html response",
-                "challenge",
-                "captcha",
-                "cloudflare",
-                "blocked",
-                "skipped challenge-heavy pdf url",
-            )
-        )
-
-    @staticmethod
-    def _is_retryable_identifier(identifier: str) -> bool:
-        if not identifier:
-            return False
-        lowered = identifier.lower()
-        if lowered.startswith("10."):
-            return True
-        if lowered.startswith("arxiv:"):
-            return True
-        # arXiv bare identifiers
-        return bool(re.fullmatch(r"\d{4}\.\d{4,5}(?:v\d+)?", identifier))
-
-    @staticmethod
-    def _select_retry_identifier(
-        normalized_identifier: str, metadata: dict[str, Any] | None
-    ) -> str:
-        if isinstance(metadata, dict):
-            for key in ("doi", "DOI"):
-                value = metadata.get(key)
-                if isinstance(value, str) and value.startswith("10."):
-                    return value.strip()
-        return normalized_identifier
 
     def _resolve_sciencedirect_pii_to_doi(self, identifier: str) -> str | None:
         parsed = urlparse(identifier or "")
@@ -1357,24 +1023,3 @@ class SciHubClient:
 
         self._pii_doi_cache[pii] = None
         return None
-
-    @staticmethod
-    def _select_best_identifier_variant(variants: list[str]) -> str:
-        """
-        Prefer cleaner identifier variants when multiple raw links normalize to the same key.
-        """
-
-        def _score(value: str) -> tuple[int, int]:
-            lowered = (value or "").lower()
-            penalty = 0
-            penalty += lowered.count("](") * 8
-            penalty += lowered.count(")](") * 8
-            penalty += lowered.count("{") * 4
-            penalty += lowered.count("}") * 4
-            penalty += lowered.count("[") * 3
-            penalty += lowered.count("]") * 3
-            penalty += lowered.count("?utm_") * 6
-            penalty += lowered.count("http://") + lowered.count("https://")
-            return penalty, len(value or "")
-
-        return min(variants, key=_score)
