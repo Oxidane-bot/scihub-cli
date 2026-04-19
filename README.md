@@ -346,6 +346,10 @@ The tool automatically adapts HTTP headers for different publishers:
 - Some publishers may block automated downloads
 - Sci-Hub mirrors may change or become unavailable
 
+## Use with AI Agents (MCP)
+
+If you want to let LLM-based agents (Claude, GPT, etc.) download papers directly, check out [**paper-download-mcp**](https://github.com/Oxidane-bot/paper-download-mcp) -- an MCP server built on the same core that exposes paper downloading as a tool your agent can call.
+
 ## Legal Disclaimer
 
 This tool is provided for educational and research purposes only. Users are responsible for ensuring they comply with applicable laws and regulations when using this tool.
