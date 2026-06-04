@@ -11,7 +11,7 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 dependencies = [
     "requests>=2.25.1",
     "beautifulsoup4>=4.9.3",
@@ -21,7 +21,6 @@ dependencies = [
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 
@@ -29,7 +28,15 @@ classifiers = [
 scihub-cli = "scihub_cli.scihub_dl_refactored:main"
 
 [tool.setuptools]
-packages = ["scihub_cli"]
+packages = [
+    "scihub_cli",
+    "scihub_cli.config",
+    "scihub_cli.converters",
+    "scihub_cli.core",
+    "scihub_cli.network",
+    "scihub_cli.sources",
+    "scihub_cli.utils",
+]
 
 [tool.setuptools.package-data]
 scihub_cli = ["py.typed"] 

@@ -60,24 +60,34 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### Install scihub-cli (Global Installation)
+### Install scihub-cli (recommended)
 
 ```bash
-# Install globally from the current directory
-uv tool install .
+# From PyPI
+pip install scihub-cli
 
-# Or install globally from GitHub
-uv tool install git+https://github.com/Oxidane-bot/scihub-cli.git
+# Or install globally with uv
+uv tool install scihub-cli
 
 # Try without installing (temporary run)
 uvx scihub-cli papers.txt
 ```
 
-**Note**: `uv tool install` installs the tool globally on your system, making the `scihub-cli` command available from anywhere in your terminal.
+### Development / source install
+
+```bash
+# Install from the current directory while developing
+uv tool install .
+
+# Or install from GitHub for an unreleased snapshot
+uv tool install git+https://github.com/Oxidane-bot/scihub-cli.git
+```
+
+**Note**: `pip install` and `uv tool install scihub-cli` use the published release. `uv tool install .` is best for local development.
 
 ### Global vs Temporary Usage
 
-- **Global Installation**: Use `uv tool install` to install the tool permanently on your system
+- **Global Installation**: Use `pip install scihub-cli` or `uv tool install scihub-cli`
 - **Temporary Usage**: Use `uvx scihub-cli` to run the tool without installing it
 - **Source Code**: Clone the repo and run directly with Python for development
 
@@ -139,6 +149,9 @@ If you encounter issues with the installation, try the following:
 
 5. If having issues, try:
    ```bash
+   # Upgrade a PyPI install
+   pip install --upgrade scihub-cli
+
    # List installed tools
    uv tool list
    
@@ -152,6 +165,10 @@ If you encounter issues with the installation, try the following:
 
 6. If `--to-md` still behaves like an old version after upgrade, force refresh the local tool environment:
    ```bash
+   # Published release
+   uv tool install --force --reinstall --refresh scihub-cli
+
+   # Local development checkout
    uv tool install --force --reinstall --refresh .
    ```
 
@@ -348,7 +365,7 @@ The tool automatically adapts HTTP headers for different publishers:
 
 ## Use with AI Agents (MCP)
 
-[paper-download-mcp](https://github.com/Oxidane-bot/paper-download-mcp) is an MCP server built on the same core, exposing paper downloading as a tool your agent can call. Install `uv` first (`uvx --version` to verify), then:
+[paper-download-mcp](https://github.com/Oxidane-bot/paper-download-mcp) is a separate MCP server built on the same core and published on PyPI. It exposes paper downloading as a tool your agent can call. Install `uv` first (`uvx --version` to verify), then:
 
 ### Claude Code
 

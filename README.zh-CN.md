@@ -63,24 +63,34 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 安装scihub-cli（全局安装）
+### 安装scihub-cli（推荐）
 
 ```
-# 从当前目录全局安装
-uv tool install .
+# 从 PyPI 安装
+pip install scihub-cli
 
-# 或从GitHub全局安装
-uv tool install git+https://github.com/Oxidane-bot/scihub-cli.git
+# 或使用 uv 全局安装
+uv tool install scihub-cli
 
 # 临时运行（不安装）
 uvx scihub-cli papers.txt
 ```
 
-**注意**：`uv tool install` 会在您的系统上全局安装该工具，使 `scihub-cli` 命令在终端的任何位置都可用。
+### 开发/源码安装
+
+```
+# 从当前目录安装（适合开发）
+uv tool install .
+
+# 或从 GitHub 安装未发布版本
+uv tool install git+https://github.com/Oxidane-bot/scihub-cli.git
+```
+
+**注意**：`pip install scihub-cli` 和 `uv tool install scihub-cli` 使用已发布版本；`uv tool install .` 更适合本地开发。
 
 ### 全局安装 vs 临时使用
 
-- **全局安装**：使用 `uv tool install` 在您的系统上永久安装该工具
+- **全局安装**：使用 `pip install scihub-cli` 或 `uv tool install scihub-cli`
 - **临时使用**：使用 `uvx scihub-cli` 运行工具而无需安装
 - **源码运行**：克隆仓库并使用Python直接运行（适用于开发）
 
@@ -139,8 +149,17 @@ uvx scihub-cli papers.txt
    source ~/.bashrc  # 或 .zshrc, .bash_profile 等
    ```
 
-5. 如果升级后 `--to-md` 表现仍像旧版本，请强制刷新本地工具环境：
+5. 如果是通过 PyPI 安装，升级时可使用：
    ```
+   pip install --upgrade scihub-cli
+   ```
+
+6. 如果升级后 `--to-md` 表现仍像旧版本，请强制刷新本地工具环境：
+   ```
+   # 已发布版本
+   uv tool install --force --reinstall --refresh scihub-cli
+
+   # 本地开发副本
    uv tool install --force --reinstall --refresh .
    ```
 
@@ -294,6 +313,40 @@ uvx scihub-cli papers.txt
 ## 法律免责声明
 
 此工具仅供教育和研究目的使用。用户负责确保其使用符合适用的法律法规。
+
+## 与 AI Agent 配合使用（MCP）
+
+[paper-download-mcp](https://github.com/Oxidane-bot/paper-download-mcp) 是一个独立的 MCP 服务，和本项目共用核心逻辑，并已发布到 PyPI。它可以作为 agent 调用的论文下载工具。先安装 `uv`（可用 `uvx --version` 验证），然后：
+
+### Claude Code
+
+```bash
+claude mcp add --transport stdio --scope project --env PAPER_DOWNLOAD_EMAIL=your-email@university.edu paper-download -- uvx paper-download-mcp
+```
+
+### Claude Desktop
+
+编辑 MCP 配置（macOS：`~/Library/Application Support/Claude/claude_desktop_config.json`，Windows：`%APPDATA%\Claude\claude_desktop_config.json`）：
+
+```json
+{
+  "mcpServers": {
+    "paper-download": {
+      "command": "uvx",
+      "args": ["paper-download-mcp"],
+      "env": {
+        "PAPER_DOWNLOAD_EMAIL": "your-email@university.edu"
+      }
+    }
+  }
+}
+```
+
+### Codex
+
+```bash
+codex mcp add paper-download --env PAPER_DOWNLOAD_EMAIL=your-email@university.edu -- uvx paper-download-mcp
+```
 
 ## Longrun 迭代流程
 
