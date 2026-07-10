@@ -20,12 +20,12 @@ After installing the CLI, install its bundled Skill into all supported user-leve
 scihub-cli skill install
 ```
 
-Supported targets are Codex, Claude Code, and Gemini CLI. To install only selected targets, use
-`--target`; repeat it or supply a comma-separated list. Existing Skills are protected unless
-`--force` is specified.
+The default targets are Codex, Claude Code, Gemini CLI, GitHub Copilot, OpenClaw, and OpenCode. To
+install only selected targets, use `--target`; repeat it or supply a comma-separated list. Existing
+Skills are protected unless `--force` is specified.
 
 ```bash
-scihub-cli skill install --target codex,claude-code
+scihub-cli skill install --target copilot,openclaw,opencode
 scihub-cli skill install --target gemini-cli --force
 ```
 

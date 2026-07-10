@@ -10,7 +10,8 @@ from importlib.resources import files
 from pathlib import Path
 
 SKILL_NAME = "scihub-cli"
-DEFAULT_TARGETS = ("codex", "claude-code", "gemini-cli")
+DEFAULT_TARGETS = ("codex", "claude-code", "gemini-cli", "copilot", "openclaw", "opencode")
+SUPPORTED_TARGETS = DEFAULT_TARGETS
 
 
 def _home() -> Path:
@@ -25,6 +26,9 @@ def target_paths() -> dict[str, Path]:
     return {
         "codex": codex_home / "skills" / SKILL_NAME,
         "claude-code": claude_home / "skills" / SKILL_NAME,
+        "copilot": _home() / ".copilot" / "skills" / SKILL_NAME,
+        "openclaw": _home() / ".openclaw" / "skills" / SKILL_NAME,
+        "opencode": _home() / ".config" / "opencode" / "skills" / SKILL_NAME,
         "gemini-cli": gemini_home / "skills" / SKILL_NAME,
     }
 
@@ -59,11 +63,11 @@ def _parse_targets(values: list[str] | None) -> list[str]:
             target = target.strip().lower()
             if target == "all":
                 selected.extend(DEFAULT_TARGETS)
-            elif target in DEFAULT_TARGETS:
+            elif target in SUPPORTED_TARGETS:
                 selected.append(target)
             else:
                 raise ValueError(
-                    f"Unsupported target {target!r}. Choose: all, {', '.join(DEFAULT_TARGETS)}"
+                    f"Unsupported target {target!r}. Choose: all, {', '.join(SUPPORTED_TARGETS)}"
                 )
     return list(dict.fromkeys(selected))
 
@@ -80,7 +84,10 @@ def main(argv: list[str] | None = None) -> int:
         "--target",
         action="append",
         metavar="TARGET",
-        help="all (default), codex, claude-code, or gemini-cli; repeat or use commas",
+        help=(
+            "all (default), codex, claude-code, gemini-cli, copilot, openclaw, or opencode; "
+            "repeat or use commas"
+        ),
     )
     install.add_argument("--force", action="store_true", help="Replace an existing Skill")
 

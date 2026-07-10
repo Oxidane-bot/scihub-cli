@@ -32,6 +32,11 @@ A command-line tool for batch downloading academic papers with multi-source supp
 
 ## Recent Updates
 
+### v0.5.2
+
+- Added personal Skill installation for GitHub Copilot, OpenClaw, and OpenCode
+- Kept Gemini CLI in the default installation alongside the new targets
+
 ### v0.5.1
 
 - Added `scihub-cli skill install` to install a bundled Skill for Codex, Claude Code, and Gemini CLI
@@ -99,16 +104,17 @@ After installing the CLI, install its bundled Skill into all supported user-leve
 scihub-cli skill install
 ```
 
-Supported targets are Codex, Claude Code, and Gemini CLI. Select targets explicitly (or replace an
-existing Skill) when needed:
+The default targets are Codex, Claude Code, Gemini CLI, GitHub Copilot, OpenClaw, and OpenCode.
+Select targets explicitly (or replace an existing Skill) when needed:
 
 ```bash
-scihub-cli skill install --target codex,claude-code
+scihub-cli skill install --target copilot,openclaw,opencode
 scihub-cli skill install --target gemini-cli --force
 ```
 
 The Skill tells an agent how to prepare batch inputs, run the downloader, and verify results. It
-does not configure an MCP server.
+does not configure an MCP server. Cursor is not listed because its public customization format is
+Rules/Commands rather than a native user-level `SKILL.md` location.
 
 ### Global vs Temporary Usage
 

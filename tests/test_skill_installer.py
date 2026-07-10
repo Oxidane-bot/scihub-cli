@@ -10,16 +10,30 @@ def test_parse_targets_defaults_to_all():
 
 
 def test_parse_targets_accepts_repeated_and_comma_separated_values():
-    assert skill_installer._parse_targets(["codex,gemini-cli", "claude-code", "codex"]) == [
+    assert skill_installer._parse_targets(["codex,openclaw", "opencode", "codex"]) == [
         "codex",
-        "gemini-cli",
-        "claude-code",
+        "openclaw",
+        "opencode",
     ]
 
 
-def test_parse_targets_rejects_unknown_target():
+def test_parse_targets_accepts_gemini_cli_explicitly():
+    assert skill_installer._parse_targets(["gemini-cli"]) == ["gemini-cli"]
+
+
+def test_parse_targets_rejects_cursor_without_a_native_skill_path():
     with pytest.raises(ValueError, match="Unsupported target"):
         skill_installer._parse_targets(["cursor"])
+
+
+def test_target_paths_use_documented_personal_skill_locations(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(skill_installer, "_home", lambda: tmp_path)
+
+    paths = skill_installer.target_paths()
+
+    assert paths["copilot"] == tmp_path / ".copilot" / "skills" / "scihub-cli"
+    assert paths["openclaw"] == tmp_path / ".openclaw" / "skills" / "scihub-cli"
+    assert paths["opencode"] == tmp_path / ".config" / "opencode" / "skills" / "scihub-cli"
 
 
 def test_install_skill_copies_the_bundled_skill(monkeypatch, tmp_path: Path):

@@ -32,6 +32,11 @@
 
 ## 最近更新
 
+### v0.5.2
+
+- 新增 GitHub Copilot、OpenClaw 和 OpenCode 的用户级 Skill 安装
+- Gemini CLI 继续保留在默认安装目标中
+
 ### v0.5.1
 
 - 新增 `scihub-cli skill install`，可将内置 Skill 安装到 Codex、Claude Code 和 Gemini CLI
@@ -102,14 +107,14 @@ uv tool install git+https://github.com/Oxidane-bot/scihub-cli.git
 scihub-cli skill install
 ```
 
-目前支持 Codex、Claude Code 和 Gemini CLI。可以指定目标，或覆盖已安装的 Skill：
+默认目标为 Codex、Claude Code、Gemini CLI、GitHub Copilot、OpenClaw 和 OpenCode。可以指定目标，或覆盖已安装的 Skill：
 
 ```
-scihub-cli skill install --target codex,claude-code
+scihub-cli skill install --target copilot,openclaw,opencode
 scihub-cli skill install --target gemini-cli --force
 ```
 
-Skill 会指导 Agent 准备批量输入、调用下载器和核验结果；它不配置 MCP 服务。
+Skill 会指导 Agent 准备批量输入、调用下载器和核验结果；它不配置 MCP 服务。Cursor 的公开定制规范目前是 Rules/Commands，而非用户级 `SKILL.md` 目录，因此不伪装成原生 Skill 目标。
 
 ### 全局安装 vs 临时使用
 
