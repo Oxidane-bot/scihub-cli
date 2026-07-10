@@ -77,6 +77,11 @@ def _write_failure_report(results: list[DownloadResult], output_dir: str) -> str
 
 def main():
     """Main entry point for the script."""
+    if len(sys.argv) > 1 and sys.argv[1] == "skill":
+        from .skill_installer import main as skill_main
+
+        return skill_main(sys.argv[2:])
+
     parser = argparse.ArgumentParser(
         prog="scihub-cli",
         description="Multi-source academic paper downloader.",

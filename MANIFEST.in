@@ -4,5 +4,6 @@ include LICENSE
 include INSTALL.md
 recursive-include scihub_cli *.py
 include scihub_cli/py.typed
+include scihub_cli/scihub-cli.SKILL.md
 global-exclude __pycache__ *.py[cod]
 prune tests/ 

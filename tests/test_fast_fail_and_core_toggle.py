@@ -167,6 +167,7 @@ def test_disable_core_removes_core_source(tmp_path: Path):
     )
     assert "CORE" not in client.source_manager.sources
     assert "OpenAlex" in client.source_manager.sources
+    assert "OpenAIRE" in client.source_manager.sources
 
     client_with_core = SciHubClient(
         output_dir=str(tmp_path / "out-enabled"),

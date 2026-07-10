@@ -52,3 +52,18 @@ def test_source_manager_routes_non_url_arxiv_identifier_to_oa_chain():
         "CORE",
         "Sci-Hub",
     ]
+
+
+def test_source_manager_adds_openaire_after_fast_oa_sources():
+    sources = [
+        _StubSource("OpenAlex", can_handle_result=True),
+        _StubSource("OpenAIRE", can_handle_result=True),
+        _StubSource("Sci-Hub", can_handle_result=True),
+    ]
+    manager = SourceManager(sources=sources, enable_year_routing=False)
+
+    old_paper_chain = manager.get_source_chain("10.1234/example", year=2020)
+    recent_paper_chain = manager.get_source_chain("10.1234/example", year=2024)
+
+    assert [source.name for source in old_paper_chain] == ["OpenAlex", "OpenAIRE", "Sci-Hub"]
+    assert [source.name for source in recent_paper_chain] == ["OpenAlex", "OpenAIRE"]

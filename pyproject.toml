@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scihub-cli"
-version = "0.5.0"
+version = "0.5.1"
 description = "Multi-source academic paper downloader (Sci-Hub, Unpaywall, CORE)"
 authors = [
     {name = "Sci-Hub CLI", email = "example@example.com"},
@@ -39,7 +39,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-scihub_cli = ["py.typed"] 
+scihub_cli = ["py.typed", "scihub-cli.SKILL.md"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["*.pyc", "*.pyo", "__pycache__/*"]

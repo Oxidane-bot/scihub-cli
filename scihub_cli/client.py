@@ -38,7 +38,6 @@ from .core.source_manager import SourceManager
 from .models import DownloadProgress, DownloadResult, ProgressCallback
 from .network.session import BasicSession
 from .sources.arxiv_source import ArxivSource
-from .sources.base_oai_source import BASESource
 from .sources.core_source import CORESource
 from .sources.direct_pdf_source import DirectPDFSource
 from .sources.europe_pmc_oa_source import EuropePMCOASource
@@ -49,7 +48,6 @@ from .sources.openalex_source import OpenAlexSource
 from .sources.osti_source import OSTISource
 from .sources.pmc_source import PMCSource
 from .sources.scihub_source import SciHubSource
-from .sources.semantic_scholar_source import SemanticScholarSource
 from .sources.unpaywall_source import UnpaywallSource
 from .utils.logging import get_logger
 from .utils.retry import RetryConfig
@@ -163,18 +161,6 @@ class SciHubClient:
                 ),
             )
 
-            # Semantic Scholar: OA metadata + PDF links, no email required
-            sources.insert(
-                0,
-                SemanticScholarSource(timeout=self.timeout, fast_fail=self.fast_fail),
-            )
-
-            # OpenAIRE: OA repository links, no email required
-            sources.insert(
-                0,
-                OpenAireSource(timeout=self.timeout, fast_fail=self.fast_fail),
-            )
-
             # Europe PMC: OA discovery for biomedical literature (no email required)
             sources.insert(
                 0,
@@ -194,14 +180,14 @@ class SciHubClient:
                     ),
                 )
 
-            # BASE OAI-PMH: OA repository links (IP-restricted interface)
-            sources.insert(0, BASESource(timeout=self.timeout, fast_fail=self.fast_fail))
-
             # CORE does not require email, keep as OA fallback (unless explicitly disabled)
             if self.enable_core:
                 sources.append(CORESource(api_key=settings.core_api_key, timeout=self.timeout))
             else:
                 logger.info("CORE source disabled by configuration")
+
+            # OpenAIRE is a sequential fallback after faster OA sources.
+            sources.append(OpenAireSource(timeout=self.timeout, fast_fail=self.fast_fail))
 
             self.source_manager = SourceManager(
                 sources=sources,

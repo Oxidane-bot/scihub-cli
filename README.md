@@ -1,6 +1,6 @@
 # Sci-Hub CLI
 
-A command-line tool for batch downloading academic papers with multi-source support (OpenAlex, Europe PMC, Sci-Hub, Unpaywall, arXiv, CORE).
+A command-line tool for batch downloading academic papers with multi-source support (OpenAlex, Europe PMC, OpenAIRE, Sci-Hub, Unpaywall, arXiv, CORE).
 
 *Read this in other languages: [English](README.md), [简体中文](README.zh-CN.md)*
 
@@ -9,6 +9,7 @@ A command-line tool for batch downloading academic papers with multi-source supp
 - **Multi-Source Support**: Intelligently routes downloads across multiple sources
   - **OpenAlex**: OA metadata + full-text link discovery (no email required)
   - **Europe PMC**: OA full-text links for biomedical literature (no email required)
+  - **OpenAIRE**: Repository-link fallback after faster OA sources (no email required)
   - **arXiv**: Prioritized for preprints (free, no API key needed)
   - **Unpaywall**: For open access papers (requires email)
   - **Sci-Hub**: Fallback for older papers (coverage-driven, slower)
@@ -30,6 +31,11 @@ A command-line tool for batch downloading academic papers with multi-source supp
 - **Metadata-based Filenames**: Automatically names files as `[YYYY] - [Title].pdf` for easy organization
 
 ## Recent Updates
+
+### v0.5.1
+
+- Added `scihub-cli skill install` to install a bundled Skill for Codex, Claude Code, and Gemini CLI
+- Added OpenAIRE as a sequential OA fallback after faster sources
 
 ### v0.4.1
 
@@ -84,6 +90,25 @@ uv tool install git+https://github.com/Oxidane-bot/scihub-cli.git
 ```
 
 **Note**: `pip install` and `uv tool install scihub-cli` use the published release. `uv tool install .` is best for local development.
+
+### Install the bundled AI coding-agent Skill
+
+After installing the CLI, install its bundled Skill into all supported user-level agents:
+
+```bash
+scihub-cli skill install
+```
+
+Supported targets are Codex, Claude Code, and Gemini CLI. Select targets explicitly (or replace an
+existing Skill) when needed:
+
+```bash
+scihub-cli skill install --target codex,claude-code
+scihub-cli skill install --target gemini-cli --force
+```
+
+The Skill tells an agent how to prepare batch inputs, run the downloader, and verify results. It
+does not configure an MCP server.
 
 ### Global vs Temporary Usage
 
@@ -327,9 +352,9 @@ The tool uses intelligent multi-source routing:
 
 1. **Year Detection**: Queries Crossref API to determine publication year
 2. **Smart Routing**:
-   - Papers before 2021 → Try OA sources first, then Sci-Hub fallback
-   - Papers 2021+ → Try OA sources only (skip Sci-Hub)
-   - Unknown year → OA sources first with Sci-Hub fallback
+   - Papers before 2021 → Try fast OA sources, then OpenAIRE, then Sci-Hub
+   - Papers 2021+ → Try fast OA sources, then OpenAIRE (skip Sci-Hub)
+   - Unknown year → Try fast OA sources, then OpenAIRE, then Sci-Hub
 3. **Download Process**:
    - Get PDF URL from selected source
    - Download with progress tracking

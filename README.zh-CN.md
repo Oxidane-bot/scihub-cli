@@ -1,6 +1,6 @@
 # Sci-Hub CLI
 
-支持多数据源的学术论文批量下载工具 (OpenAlex、Europe PMC、Sci-Hub、Unpaywall、arXiv、CORE)
+支持多数据源的学术论文批量下载工具 (OpenAlex、Europe PMC、OpenAIRE、Sci-Hub、Unpaywall、arXiv、CORE)
 
 *其他语言版本: [English](README.md), [简体中文](README.zh-CN.md)*
 
@@ -9,6 +9,7 @@
 - **多数据源支持**: 智能路由多个下载源
   - **OpenAlex**: 开放获取元数据与全文链接发现（无需邮箱）
   - **Europe PMC**: 生物医学 OA 全文链接（无需邮箱）
+  - **OpenAIRE**: 在更快的 OA 来源之后顺序查询的仓储链接备选源（无需邮箱）
   - **arXiv**: 预印本优先 (免费,无需 API key)
   - **Unpaywall**: 开放获取论文 (需要邮箱)
   - **Sci-Hub**: 历史论文备选源 (覆盖率高但更慢)
@@ -30,6 +31,11 @@
 - **基于元数据的文件名**: 自动命名为 `[年份] - [标题].pdf` 便于整理
 
 ## 最近更新
+
+### v0.5.1
+
+- 新增 `scihub-cli skill install`，可将内置 Skill 安装到 Codex、Claude Code 和 Gemini CLI
+- 将 OpenAIRE 接入为更快 OA 来源之后的顺序备选源
 
 ### v0.4.1
 
@@ -87,6 +93,23 @@ uv tool install git+https://github.com/Oxidane-bot/scihub-cli.git
 ```
 
 **注意**：`pip install scihub-cli` 和 `uv tool install scihub-cli` 使用已发布版本；`uv tool install .` 更适合本地开发。
+
+### 安装内置的 AI 编程 Agent Skill
+
+安装 CLI 后，以下命令会把内置 Skill 安装到所有支持的用户级 Agent：
+
+```
+scihub-cli skill install
+```
+
+目前支持 Codex、Claude Code 和 Gemini CLI。可以指定目标，或覆盖已安装的 Skill：
+
+```
+scihub-cli skill install --target codex,claude-code
+scihub-cli skill install --target gemini-cli --force
+```
+
+Skill 会指导 Agent 准备批量输入、调用下载器和核验结果；它不配置 MCP 服务。
 
 ### 全局安装 vs 临时使用
 
@@ -298,9 +321,9 @@ uvx scihub-cli papers.txt
 1. 读取输入文件（支持 DOI、arXiv ID、URL）
 2. （可选）通过 Crossref 获取发表年份，用于智能路由
 3. 按路由策略查询多个来源获取 PDF 链接与元数据：
-   - 2021 年前：先 OA 源，Sci-Hub 兜底
-   - 2021 年后：仅 OA 源（跳过 Sci-Hub）
-   - 年份未知：OA 优先，Sci-Hub 兜底
+   - 2021 年前：先快速 OA 来源，再 OpenAIRE，最后 Sci-Hub 兜底
+   - 2021 年后：先快速 OA 来源，再 OpenAIRE（跳过 Sci-Hub）
+   - 年份未知：先快速 OA 来源，再 OpenAIRE，最后 Sci-Hub 兜底
 4. 下载 PDF、校验文件有效性（拒绝 HTML）、按元数据生成文件名（如 `[YYYY] - [Title].pdf`）
 
 ## 限制

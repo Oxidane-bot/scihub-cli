@@ -17,10 +17,19 @@ logger = get_logger(__name__)
 SourceAttempt = dict[str, Any]
 HtmlSnapshotCallback = Callable[[dict[str, Any]], None]
 
-# Configuration for parallel source queries
+# Configuration for source routing and parallel queries.
 PARALLEL_QUERY_WORKERS = 4  # Max concurrent source queries
 PARALLEL_QUERY_ENABLED = True  # Can be disabled for debugging
-SLOW_SOURCES = {"Sci-Hub"}
+OPEN_ACCESS_SOURCE_CHAIN = (
+    "OpenAlex",
+    "Unpaywall",
+    "Europe PMC OA",
+    "Europe PMC",
+    "arXiv",
+    "CORE",
+)
+OPENAIRE_FALLBACK = "OpenAIRE"
+SLOW_SOURCES = {OPENAIRE_FALLBACK, "Sci-Hub"}
 
 
 class SourceManager:
@@ -72,9 +81,9 @@ class SourceManager:
         Strategy:
         - URLs: Direct PDF -> PMC -> HTML Landing (URL-specific handlers)
         - arXiv identifiers: arXiv first (direct match)
-        - Papers before 2021: OA sources first, Sci-Hub fallback for coverage
-        - Papers 2021+: OA sources only (skip Sci-Hub)
-        - Unknown year: OA sources first with Sci-Hub fallback
+        - Papers before 2021: fast OA sources, OpenAIRE, then Sci-Hub
+        - Papers 2021+: fast OA sources, then OpenAIRE
+        - Unknown year: fast OA sources, OpenAIRE, then Sci-Hub
 
         Args:
             doi: The DOI or identifier to route
@@ -98,9 +107,7 @@ class SourceManager:
 
         # Non-URL arXiv identifiers: OA chain is still appropriate.
         if "arXiv" in self.sources and self.sources["arXiv"].can_handle(doi):
-            logger.info(
-                "[Router] Detected arXiv identifier, using arXiv -> OpenAlex -> Unpaywall -> Europe PMC OA -> Europe PMC -> CORE -> Sci-Hub"
-            )
+            logger.info("[Router] Detected arXiv identifier, using arXiv -> OA sources -> Sci-Hub")
             return self._filter_chain(
                 self._build_chain(
                     [
@@ -134,31 +141,25 @@ class SourceManager:
 
         # Build source chain based on year
         if year is None:
-            # Unknown year: conservative strategy (OA first with Sci-Hub fallback)
+            # Unknown year: retain the legacy-coverage fallback after OA discovery.
             logger.info(
-                f"[Router] Year unknown for {doi}, using OpenAlex -> Unpaywall -> Europe PMC OA -> Europe PMC -> arXiv -> CORE -> Sci-Hub"
+                f"[Router] Year unknown for {doi}, using fast OA -> {OPENAIRE_FALLBACK} -> Sci-Hub"
             )
-            chain = self._build_chain(
-                ["OpenAlex", "Unpaywall", "Europe PMC OA", "Europe PMC", "arXiv", "CORE", "Sci-Hub"]
-            )
+            chain = self._build_chain([*OPEN_ACCESS_SOURCE_CHAIN, OPENAIRE_FALLBACK, "Sci-Hub"])
 
         elif year < self.year_threshold:
-            # Old papers: OA first for speed, Sci-Hub fallback for coverage
+            # Old papers: retain the legacy-coverage fallback after OA discovery.
             logger.info(
-                f"[Router] Year {year} < {self.year_threshold}, using OpenAlex -> Unpaywall -> Europe PMC OA -> Europe PMC -> arXiv -> CORE -> Sci-Hub"
+                f"[Router] Year {year} < {self.year_threshold}, using fast OA -> {OPENAIRE_FALLBACK} -> Sci-Hub"
             )
-            chain = self._build_chain(
-                ["OpenAlex", "Unpaywall", "Europe PMC OA", "Europe PMC", "arXiv", "CORE", "Sci-Hub"]
-            )
+            chain = self._build_chain([*OPEN_ACCESS_SOURCE_CHAIN, OPENAIRE_FALLBACK, "Sci-Hub"])
 
         else:
-            # New papers: Sci-Hub has no coverage, OA only
+            # New papers: do not include the legacy-coverage fallback.
             logger.info(
-                f"[Router] Year {year} >= {self.year_threshold}, using OpenAlex -> Unpaywall -> Europe PMC OA -> Europe PMC -> arXiv -> CORE"
+                f"[Router] Year {year} >= {self.year_threshold}, using fast OA -> {OPENAIRE_FALLBACK}"
             )
-            chain = self._build_chain(
-                ["OpenAlex", "Unpaywall", "Europe PMC OA", "Europe PMC", "arXiv", "CORE"]
-            )
+            chain = self._build_chain([*OPEN_ACCESS_SOURCE_CHAIN, OPENAIRE_FALLBACK])
 
         if "OSTI" in self.sources and self.sources["OSTI"].can_handle(doi) and not any(
             source.name == "OSTI" for source in chain
