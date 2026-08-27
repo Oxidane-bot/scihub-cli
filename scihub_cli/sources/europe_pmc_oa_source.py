@@ -121,7 +121,7 @@ class EuropePMCOASource(PaperSource):
     def _fetch_from_api(self, doi: str) -> dict[str, Any] | None:
         try:
             params = {
-                "query": f'DOI:\"{doi}\" AND OPEN_ACCESS:Y',
+                "query": f'DOI:"{doi}" AND OPEN_ACCESS:Y',
                 "format": "json",
                 "resultType": "core",
                 "pageSize": 1,

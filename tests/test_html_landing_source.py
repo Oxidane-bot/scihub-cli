@@ -439,3 +439,12 @@ def test_html_landing_fast_fail_reader_fallback_is_lazy_when_primary_probe_succe
 
     assert source.get_pdf_url("https://www.mdpi.com/1996-1073/16/1/519") == expected
     assert downloader.reader_calls == 0
+
+
+def test_jina_reader_url_drops_query_string_for_privacy():
+    assert (
+        HTMLLandingSource._build_jina_reader_url(
+            "https://journals.sagepub.com/doi/10.1177/example?access_token=secret&utm_source=mail"
+        )
+        == "https://r.jina.ai/https://journals.sagepub.com/doi/10.1177/example"
+    )

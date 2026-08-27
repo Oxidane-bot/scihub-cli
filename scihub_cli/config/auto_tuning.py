@@ -54,7 +54,7 @@ def _merge_domain_list(
     add: Iterable[str] | None = None,
     drop: Iterable[str] | None = None,
 ) -> tuple[str, ...]:
-    merged = { _normalize_host(item) for item in base if _normalize_host(item) }
+    merged = {_normalize_host(item) for item in base if _normalize_host(item)}
     for item in add or []:
         cleaned = _normalize_host(item)
         if cleaned:

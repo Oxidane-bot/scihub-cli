@@ -217,7 +217,11 @@ class BASESource(PaperSource):
         urls: list[str] = []
         for elem in metadata_elem.iter():
             tag = elem.tag.lower()
-            if not tag.endswith("identifier") and not tag.endswith("link") and not tag.endswith("url"):
+            if (
+                not tag.endswith("identifier")
+                and not tag.endswith("link")
+                and not tag.endswith("url")
+            ):
                 continue
             text = (elem.text or "").strip()
             if text.startswith("http://") or text.startswith("https://"):

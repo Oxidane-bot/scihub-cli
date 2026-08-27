@@ -1,18 +1,21 @@
-name: Publish Python Package
+name: CI
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
-  release:
-    types: [published]
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish:
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    environment: pypi
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Check out repository
@@ -21,7 +24,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -38,20 +41,64 @@ jobs:
         run: uv run --locked pytest -m "not integration and not e2e"
 
       - name: Audit dependencies
+        if: matrix.python-version == '3.14'
         run: uv run --locked --with pip-audit pip-audit
+
+  lint:
+    name: Ruff
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked
 
       - name: Run ruff
         run: |
           uv run --locked ruff check .
           uv run --locked ruff format --check .
 
+  build-install-smoke:
+    name: Build and install smoke test
+    needs: [tests, lint]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
       - name: Build distributions
         run: uv build --wheel --sdist --out-dir dist
 
-      - name: Smoke test installed wheel
+      - name: Install wheel and run smoke checks
         run: |
           set -euo pipefail
-          smoke_venv="$RUNNER_TEMP/scihub-cli-publish-smoke"
+          smoke_venv="$RUNNER_TEMP/scihub-cli-smoke"
           uv venv --python python "$smoke_venv"
           smoke_python="$smoke_venv/bin/python"
           wheel="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
@@ -60,6 +107,3 @@ jobs:
           cd "$RUNNER_TEMP"
           "$smoke_python" -m scihub_cli --version
           "$smoke_venv/bin/scihub-cli" --version
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1

@@ -37,7 +37,10 @@ def test_target_paths_use_documented_personal_skill_locations(monkeypatch, tmp_p
 
 
 def test_install_skill_copies_the_bundled_skill(monkeypatch, tmp_path: Path):
-    paths = {target: tmp_path / target / "skills" / "scihub-cli" for target in skill_installer.DEFAULT_TARGETS}
+    paths = {
+        target: tmp_path / target / "skills" / "scihub-cli"
+        for target in skill_installer.DEFAULT_TARGETS
+    }
     monkeypatch.setattr(skill_installer, "target_paths", lambda: paths)
 
     installed = skill_installer.install_skill(["codex"])
@@ -48,7 +51,10 @@ def test_install_skill_copies_the_bundled_skill(monkeypatch, tmp_path: Path):
 
 
 def test_install_skill_requires_force_to_replace(monkeypatch, tmp_path: Path):
-    paths = {target: tmp_path / target / "skills" / "scihub-cli" for target in skill_installer.DEFAULT_TARGETS}
+    paths = {
+        target: tmp_path / target / "skills" / "scihub-cli"
+        for target in skill_installer.DEFAULT_TARGETS
+    }
     monkeypatch.setattr(skill_installer, "target_paths", lambda: paths)
     skill_installer.install_skill(["codex"])
 

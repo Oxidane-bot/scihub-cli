@@ -183,9 +183,7 @@ FAST_FAIL_PAGE_BYPASS_HOSTS = (
     "durham-repository.worktribe.com",
 )
 
-FAST_FAIL_PAGE_BYPASS_SCIHUB_MARKERS = (
-    "sci-hub.",
-)
+FAST_FAIL_PAGE_BYPASS_SCIHUB_MARKERS = ("sci-hub.",)
 
 FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS = (
     "academia.edu",

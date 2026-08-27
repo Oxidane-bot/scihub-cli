@@ -20,12 +20,13 @@ MDPI 期刊论文下载失败,返回 HTTP 403 Forbidden。
 # scihub_cli/network/session.py
 def get(self, url: str, **kwargs):
     from urllib.parse import urlparse
+
     domain = urlparse(url).netloc
 
-    if 'mdpi.com' in domain or 'mdpi-res.com' in domain:
-        self.session.headers['User-Agent'] = 'curl/8.0.0'
+    if "mdpi.com" in domain or "mdpi-res.com" in domain:
+        self.session.headers["User-Agent"] = "curl/8.0.0"
     else:
-        self.session.headers['User-Agent'] = 'Mozilla/5.0 ... Chrome ...'
+        self.session.headers["User-Agent"] = "Mozilla/5.0 ... Chrome ..."
 
     return self.session.get(url, **kwargs)
 ```

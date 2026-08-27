@@ -290,7 +290,9 @@ class HTMLLandingSource(PaperSource):
                 html=html,
                 fast_fail=fast_fail,
             ):
-                logger.debug("[HTML Landing] Fast-fail: challenge HTML detected, skipping extraction")
+                logger.debug(
+                    "[HTML Landing] Fast-fail: challenge HTML detected, skipping extraction"
+                )
                 return None
             if not reader_fetched:
                 reader_html, reader_status = self._fetch_page_with_jina_reader(base_url)
@@ -466,9 +468,11 @@ class HTMLLandingSource(PaperSource):
             return None
         if "r.jina.ai" in parsed.netloc.lower():
             return None
+        # Do not forward query strings to the third-party reader.  They often
+        # contain access tokens, session identifiers, or tracking parameters;
+        # the article path is sufficient for the reader fallback and avoids
+        # leaking those values to r.jina.ai.
         suffix = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        if parsed.query:
-            suffix = f"{suffix}?{parsed.query}"
         return f"https://r.jina.ai/{suffix}"
 
     @classmethod

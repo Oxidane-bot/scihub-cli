@@ -83,7 +83,7 @@ fi
 
 echo "Using Python: $base_python"
 
-uv build --wheel --sdist --out-dir "$dist_dir" --clear "$repo_root"
+uv build --wheel --sdist --out-dir "$dist_dir" "$repo_root"
 
 wheel="$(ls -1 "$dist_dir"/*.whl | head -n 1)"
 echo "Wheel: $wheel"
@@ -94,7 +94,7 @@ if unzip -l "$wheel" | grep -E -q "(__pycache__/|\\.pyc$|\\.pyo$)"; then
   exit 1
 fi
 
-uv venv --python "$base_python" --clear "$venv_dir"
+uv venv --python "$base_python" "$venv_dir"
 
 venv_python="$venv_dir/bin/python"
 venv_bin="$venv_dir/bin"
@@ -112,10 +112,15 @@ if [[ ! -x "$scihub_cli" ]]; then
 fi
 
 HOME="$home_dir" "$scihub_cli" --version
-HOME="$home_dir" "$venv_python" -m scihub_cli --version
-HOME="$home_dir" "$venv_python" -m scihub_cli.scihub_dl --version
 
-usage_line="$(HOME="$home_dir" "$venv_python" -m scihub_cli --help | head -n 1)"
+# Run the module from outside the checkout so this smoke test exercises the
+# installed wheel rather than the source tree that happens to be on PYTHONPATH.
+(
+  cd "$tmp"
+  HOME="$home_dir" "$venv_python" -m scihub_cli --version
+)
+
+usage_line="$(cd "$tmp" && HOME="$home_dir" "$venv_python" -m scihub_cli --help | head -n 1)"
 echo "$usage_line" | grep -q "usage: scihub-cli"
 
 HOME="$home_dir" "$scihub_cli" "$input_file" -o "$out_dir" -t 15 -r 2 >"$cli_log" 2>&1

@@ -341,11 +341,17 @@ def _score_url(url: str) -> int:
         score += 850
     if "tandfonline.com/doi/pdf/" in url_lower:
         score += 850
-    if "onlinelibrary.wiley.com/doi/pdf/" in url_lower or "onlinelibrary.wiley.com/doi/epdf/" in url_lower:
+    if (
+        "onlinelibrary.wiley.com/doi/pdf/" in url_lower
+        or "onlinelibrary.wiley.com/doi/epdf/" in url_lower
+    ):
         score += 800
     if "link.springer.com/content/pdf/" in url_lower and url_lower.endswith(".pdf"):
         score += 900
-    if "journals.sagepub.com/doi/pdf" in url_lower or "journals.sagepub.com/doi/pdfplus" in url_lower:
+    if (
+        "journals.sagepub.com/doi/pdf" in url_lower
+        or "journals.sagepub.com/doi/pdfplus" in url_lower
+    ):
         score += 800
     if "mdpi.com/" in url_lower and "/pdf" in url_lower:
         score += 700
@@ -458,8 +464,8 @@ def _decode_escaped_token(token: str) -> str:
     token = (
         token.replace("\\/", "/")
         .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&q;", "\"")
+        .replace("&quot;", '"')
+        .replace("&q;", '"')
         .replace("&apos;", "'")
     )
     # Decode common unicode escapes conservatively.
@@ -556,9 +562,9 @@ def _extract_publisher_candidates(base_url: str, html_unescaped: str = "") -> li
     # SSRN landing pages.
     if "ssrn.com" in host:
         query_params = parse_qs(parsed.query or "")
-        abstract_id = (
-            (query_params.get("abstractid") or query_params.get("abstract_id") or [None])[0]
-        )
+        abstract_id = (query_params.get("abstractid") or query_params.get("abstract_id") or [None])[
+            0
+        ]
         if not abstract_id:
             m = re.search(r"/abstract=([0-9]+)", path, re.I)
             if m:

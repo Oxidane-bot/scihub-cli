@@ -15,15 +15,17 @@ class MirrorTier(Enum):
 class MirrorConfig:
     """Configuration for Sci-Hub mirrors organized by difficulty."""
 
-    # Mirror configuration by difficulty level
+    # Mirror configuration by difficulty level.
+    #
+    # Keep this empty by default.  Mirror domains are volatile, and a domain
+    # returning HTTP 200 for its home page is not evidence that it can serve a
+    # requested paper.  Shipping an unverified list makes the CLI spend time
+    # probing dead domains and gives callers a misleading sense of
+    # availability.  Users can supply a mirror explicitly with ``--mirror``;
+    # MirrorManager then validates an article-specific URL before using it.
     MIRROR_TIERS = {
-        MirrorTier.EASY: [  # No Cloudflare protection, use basic requests
-            "https://sci-hub.mk",
-            "https://sci-hub.ren",
-            "https://sci-hub.vg",
-            "https://sci-hub.ee",
-        ],
-        MirrorTier.HARD: [],  # Cloudflare-protected mirrors removed by default
+        MirrorTier.EASY: [],
+        MirrorTier.HARD: [],
     }
 
     @classmethod

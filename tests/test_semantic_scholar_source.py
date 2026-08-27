@@ -30,9 +30,11 @@ def test_cannot_handle_non_doi():
 
 def test_get_pdf_url_with_oa_url():
     source = SemanticScholarSource(timeout=5)
-    mock_response = _make_json_response({
-        "openAccessPdf": {"url": "https://example.com/paper.pdf"},
-    })
+    mock_response = _make_json_response(
+        {
+            "openAccessPdf": {"url": "https://example.com/paper.pdf"},
+        }
+    )
 
     with patch.object(source.session, "get", return_value=mock_response):
         url = source.get_pdf_url("10.1038/nature12373")
@@ -42,9 +44,11 @@ def test_get_pdf_url_with_oa_url():
 
 def test_get_pdf_url_no_oa_pdf():
     source = SemanticScholarSource(timeout=5)
-    mock_response = _make_json_response({
-        "openAccessPdf": None,
-    })
+    mock_response = _make_json_response(
+        {
+            "openAccessPdf": None,
+        }
+    )
 
     with patch.object(source.session, "get", return_value=mock_response):
         url = source.get_pdf_url("10.1038/nature12373")

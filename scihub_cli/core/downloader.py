@@ -87,10 +87,22 @@ class FileDownloader:
         fast_fail: bool = False,
         retries: int | None = None,
         download_deadline_seconds: float | None = None,
+        max_file_size: int | None = None,
     ):
         self.session = session or BasicSession(timeout or settings.timeout)
         self.timeout = timeout or settings.timeout
         self.fast_fail = fast_fail
+        configured_max_file_size = (
+            max_file_size
+            if max_file_size is not None
+            else getattr(settings, "max_file_size", settings.DEFAULT_MAX_FILE_SIZE)
+        )
+        configured_max_file_size = int(configured_max_file_size)
+        if configured_max_file_size <= 0:
+            configured_max_file_size = int(
+                getattr(settings, "max_file_size", settings.DEFAULT_MAX_FILE_SIZE)
+            )
+        self.max_file_size = configured_max_file_size
 
         # Retry configuration for downloads
         self.retry_config = DownloadRetryConfig()
@@ -806,6 +818,7 @@ class FileDownloader:
         import shutil
         import tempfile
 
+        response = None
         try:
             self._check_deadline(deadline_ts)
             response = self.session.get(
@@ -878,10 +891,10 @@ class FileDownloader:
                         content_type=content_type,
                     )
 
+            total_bytes = self._content_length(response)
+            self._check_declared_size(total_bytes)
             # Download to temporary location first
             temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
-            total_header = response.headers.get("Content-Length")
-            total_bytes = int(total_header) if total_header and total_header.isdigit() else None
             bytes_downloaded = 0
             deadline_state = {"ts": deadline_ts, "extensions": 0}
 
@@ -912,8 +925,9 @@ class FileDownloader:
                     for chunk in response.iter_content(chunk_size=settings.CHUNK_SIZE):
                         _check_deadline_with_progress()
                         if chunk:
-                            f.write(chunk)
                             bytes_downloaded += len(chunk)
+                            self._check_download_size(bytes_downloaded)
+                            f.write(chunk)
                             if progress_callback:
                                 progress_callback(bytes_downloaded, total_bytes)
 
@@ -941,6 +955,10 @@ class FileDownloader:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
                 raise
+            finally:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
 
         except requests.Timeout as e:
             raise RetryableError("Download timeout") from e
@@ -952,6 +970,8 @@ class FileDownloader:
         except Exception as e:
             # Unknown errors are considered retryable (conservative)
             raise RetryableError(f"Download error: {e}") from e
+        finally:
+            self._close_response(response)
 
     def _download_with_cloudscraper(
         self,
@@ -969,6 +989,7 @@ class FileDownloader:
         import shutil
         import tempfile
 
+        response = None
         try:
             scraper = cloudscraper.create_scraper()
             response = scraper.get(url, timeout=self.timeout, stream=True)
@@ -996,17 +1017,18 @@ class FileDownloader:
                 )
                 return False, f"Server returned HTML (Content-Type: {content_type})"
 
+            total_bytes = self._content_length(response)
+            self._check_declared_size(total_bytes)
             temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
-            total_header = response.headers.get("Content-Length")
-            total_bytes = int(total_header) if total_header and total_header.isdigit() else None
             bytes_downloaded = 0
 
             try:
                 with os.fdopen(temp_fd, "wb") as f:
                     for chunk in response.iter_content(chunk_size=settings.CHUNK_SIZE):
                         if chunk:
-                            f.write(chunk)
                             bytes_downloaded += len(chunk)
+                            self._check_download_size(bytes_downloaded)
+                            f.write(chunk)
                             if progress_callback:
                                 progress_callback(bytes_downloaded, total_bytes)
 
@@ -1023,10 +1045,16 @@ class FileDownloader:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
                 raise
+            finally:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
 
         except Exception as e:
             logger.debug(f"[cloudscraper] Download failed: {e}")
             return False, str(e)
+        finally:
+            self._close_response(response)
 
     def _download_with_curl_cffi(
         self,
@@ -1059,6 +1087,7 @@ class FileDownloader:
         import tempfile
         from urllib.parse import urlparse
 
+        response = None
         try:
             # Extract domain for rate limiting
             domain = urlparse(url).netloc
@@ -1086,6 +1115,7 @@ class FileDownloader:
                 impersonate="chrome110",
                 timeout=self.timeout,
                 headers={"Referer": referer},
+                stream=True,
             )
             self._last_bypass_time[domain] = time.time()
 
@@ -1113,14 +1143,21 @@ class FileDownloader:
                 )
                 return False, f"Server returned HTML (Content-Type: {content_type})"
 
+            total_bytes = self._content_length(response)
+            self._check_declared_size(total_bytes)
             # Download to temporary location first
             temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
 
             try:
+                bytes_downloaded = 0
                 with os.fdopen(temp_fd, "wb") as f:
-                    f.write(response.content)
-                if progress_callback:
-                    progress_callback(len(response.content), len(response.content))
+                    for chunk in response.iter_content(chunk_size=settings.CHUNK_SIZE):
+                        if chunk:
+                            bytes_downloaded += len(chunk)
+                            self._check_download_size(bytes_downloaded)
+                            f.write(chunk)
+                            if progress_callback:
+                                progress_callback(bytes_downloaded, total_bytes)
 
                 # Verify it's actually a PDF
                 with open(temp_path, "rb") as f:
@@ -1131,17 +1168,56 @@ class FileDownloader:
 
                 # Move to final destination
                 shutil.move(temp_path, output_path)
-                logger.debug(f"[curl_cffi] Successfully downloaded {len(response.content)} bytes")
+                logger.debug(f"[curl_cffi] Successfully downloaded {bytes_downloaded} bytes")
                 return True, None
 
             except Exception:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
                 raise
+            finally:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
 
         except Exception as e:
             logger.debug(f"[curl_cffi] Download failed: {e}")
             return False, str(e)
+        finally:
+            self._close_response(response)
+
+    @staticmethod
+    def _close_response(response: Any) -> None:
+        if response is None:
+            return
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+
+    @staticmethod
+    def _content_length(response: Any) -> int | None:
+        """Parse a non-negative Content-Length header if one was supplied."""
+        headers = getattr(response, "headers", {}) or {}
+        raw_value = headers.get("Content-Length")
+        if raw_value is None:
+            return None
+        try:
+            value = int(str(raw_value).strip())
+        except (TypeError, ValueError):
+            return None
+        return value if value >= 0 else None
+
+    def _check_declared_size(self, total_bytes: int | None) -> None:
+        if (
+            self.max_file_size is not None
+            and total_bytes is not None
+            and total_bytes > self.max_file_size
+        ):
+            raise PermanentError(f"Download exceeds maximum file size ({self.max_file_size} bytes)")
+
+    def _check_download_size(self, bytes_downloaded: int) -> None:
+        if self.max_file_size is not None and bytes_downloaded > self.max_file_size:
+            raise PermanentError(f"Download exceeds maximum file size ({self.max_file_size} bytes)")
 
     def get_page_content(
         self,
@@ -1468,7 +1544,9 @@ class FileDownloader:
         is_scihub = any(marker in host for marker in self._FAST_FAIL_PAGE_BYPASS_SCIHUB_MARKERS)
         if any(marker in host for marker in self._FAST_FAIL_SKIP_PAGE_BYPASS_HOSTS):
             return False
-        if not is_scihub and not any(marker in host for marker in self._FAST_FAIL_PAGE_BYPASS_HOSTS):
+        if not is_scihub and not any(
+            marker in host for marker in self._FAST_FAIL_PAGE_BYPASS_HOSTS
+        ):
             return False
         if is_hard_challenge_block_html(html) and not is_scihub:
             return False

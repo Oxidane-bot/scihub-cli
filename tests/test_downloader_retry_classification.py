@@ -61,3 +61,41 @@ def test_retryable_http_statuses_are_retried(tmp_path, status_code: int):
     assert success, error
     assert session.calls == 2
     assert output.read_bytes()[:4] == b"%PDF"
+
+
+def test_download_rejects_declared_file_larger_than_limit(tmp_path):
+    pdf_bytes = _make_fake_pdf_bytes(size=32)
+    session = _SequencedSession(
+        [_FakeResponse(status_code=200, content=pdf_bytes, content_type="application/pdf")]
+    )
+    downloader = FileDownloader(
+        session=session,
+        timeout=5,
+        max_file_size=16,
+    )  # type: ignore[arg-type]
+
+    output = tmp_path / "too-large.pdf"
+    success, error = downloader.download_file("https://example.org/paper.pdf", str(output))
+
+    assert not success
+    assert error == "Download exceeds maximum file size (16 bytes)"
+    assert not output.exists()
+
+
+def test_download_rejects_chunked_file_larger_than_limit(tmp_path):
+    pdf_bytes = _make_fake_pdf_bytes(size=32)
+    response = _FakeResponse(status_code=200, content=pdf_bytes, content_type="application/pdf")
+    response.headers.pop("Content-Length")
+    session = _SequencedSession([response])
+    downloader = FileDownloader(
+        session=session,
+        timeout=5,
+        max_file_size=16,
+    )  # type: ignore[arg-type]
+
+    output = tmp_path / "chunked-too-large.pdf"
+    success, error = downloader.download_file("https://example.org/paper.pdf", str(output))
+
+    assert not success
+    assert error == "Download exceeds maximum file size (16 bytes)"
+    assert not output.exists()

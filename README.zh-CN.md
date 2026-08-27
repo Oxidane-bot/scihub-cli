@@ -12,18 +12,18 @@
   - **OpenAIRE**: 在更快的 OA 来源之后顺序查询的仓储链接备选源（无需邮箱）
   - **arXiv**: 预印本优先 (免费,无需 API key)
   - **Unpaywall**: 开放获取论文 (需要邮箱)
-  - **Sci-Hub**: 历史论文备选源 (覆盖率高但更慢)
+  - **Sci-Hub**: 可选的历史论文备选源（需要用户提供并通过检查的镜像）
   - **CORE**: 额外的开放获取备选（默认关闭，可用 `--enable-core` 开启）
 - **智能年份路由**:
-  - 2021年前论文: 先 OA 源，Sci-Hub 兜底
+  - 2021年前论文: 先 OA 源，再尝试可用的 Sci-Hub 镜像
   - 2021年后论文: 仅 OA 源 (跳过 Sci-Hub)
 - **并行源查询**: 快源并行查询，慢源作为兜底
-- **并行镜像测试**: 快速找到可用的 Sci-Hub 镜像 (通常 <2秒)
+- **论文级镜像检查**: 针对具体论文页面和 PDF 链接验证用户提供的镜像
 - **智能元数据缓存**: 避免跨源重复 API 调用
 - **智能回退**: 主要来源失败时自动尝试备用来源
 - **灵活输入**: 支持 DOI、arXiv ID，以及 URL（doi.org、直链PDF、PMC文章页、开放获取落地页自动提取PDF等）
 - 支持从文本文件批量处理
-- 自动镜像选择和测试
+- 使用前验证显式指定的镜像
 - 可自定义输出目录
 - 完善的错误处理和重试机制
 - PDF验证 (拒绝HTML文件)
@@ -31,6 +31,16 @@
 - **基于元数据的文件名**: 自动命名为 `[年份] - [标题].pdf` 便于整理
 
 ## 最近更新
+
+### v0.5.3
+
+- 修复 wheel 隔离安装后的真实网络 E2E，并新增 Python 3.10-3.14 CI
+- PyPI 发布前强制执行测试、lint、构建和已安装 wheel 烟测
+- 修复 CLI/包版本漂移、输入文件不可读时的退出码和 arXiv 重试分类
+- 避免同名或并发下载互相覆盖已有文件
+- 移除过时的默认 Sci-Hub 镜像；镜像必须由用户提供并通过论文级检查
+- 增加流式下载大小限制，并收紧本地配置和日志目录权限
+- 可选的 `r.jina.ai` 阅读器回退不再转发落地页 query 参数
 
 ### v0.5.2
 
@@ -229,15 +239,24 @@ scihub-cli papers.txt --email your-email@university.edu
 
 邮箱会保存到 `~/.scihub-cli/config.json`，仅用于 Unpaywall 的速率限制，不会跟踪。
 
+在 POSIX 系统上，配置目录默认权限为 `0700`，配置文件为 `0600`。单个
+下载文件默认限制为 100 MiB；可通过设置正整数环境变量
+`SCIHUB_MAX_FILE_SIZE`（字节）调整上限。
+
+项目不再内置 Sci-Hub 镜像：镜像域名变化频繁，首页返回 HTTP 200 不能证明
+它能提供论文。使用 `--mirror https://...` 指定镜像后，CLI 会检查具体 DOI
+页面并要求存在明确的 PDF/下载链接；必要时可用 `SCIHUB_MIRROR_PROBE_DOI`
+指定用于健康检查的 DOI。
+
 ### 命令行选项
 
 ```
 用法: scihub-cli [-h] [-o OUTPUT] [-m MIRROR] [-t TIMEOUT] [-r RETRIES] [-p PARALLEL]
-                 [--enable-core] [--fast-fail] [--academic-only]
+                 [--enable-core] [--fast-fail] [--no-fast-fail] [--academic-only]
                  [--no-academic-only]
                  [--email EMAIL] [-v] [--version] 输入文件
 
-批量下载学术论文（Sci-Hub、Unpaywall、arXiv、CORE）。
+从多个开放获取来源批量下载学术论文，并可选使用 Sci-Hub 备选源。
 
 位置参数:
   输入文件              包含DOI或URL的文本文件（每行一个）
@@ -267,7 +286,10 @@ scihub-cli papers.txt --email your-email@university.edu
   --trace-html-max-chars TRACE_HTML_MAX_CHARS
                         每个 HTML 快照的最大字符数（默认: 2000000）
   --enable-core         启用 CORE 来源查询（默认关闭，避免限流导致变慢）
-  --fast-fail           永久失败时跳过 bypass 和 HTML 恢复（更快，但可能降低成功率）
+  --fast-fail           永久失败时跳过 bypass 和 HTML 恢复（默认开启）
+  --no-fast-fail        允许较慢的 bypass 和 HTML 恢复
+  --download-deadline DOWNLOAD_DEADLINE
+                        单次下载的硬截止时间（秒）
   --academic-only       下载前过滤明显非学术 URL（默认开启）
   --no-academic-only    关闭学术过滤，处理所有输入 URL
   --email EMAIL         Unpaywall API 邮箱（会保存到配置文件）
@@ -309,7 +331,7 @@ scihub-cli --enable-core papers.txt
 # 指定输出目录
 scihub-cli -o research/papers papers.txt
 
-# 使用特定镜像站点
+# 使用用户提供的镜像站点（使用前会进行论文级检查）
 scihub-cli -m https://sci-hub.se papers.txt
 
 # 增加详细度
@@ -326,17 +348,19 @@ uvx scihub-cli papers.txt
 1. 读取输入文件（支持 DOI、arXiv ID、URL）
 2. （可选）通过 Crossref 获取发表年份，用于智能路由
 3. 按路由策略查询多个来源获取 PDF 链接与元数据：
-   - 2021 年前：先快速 OA 来源，再 OpenAIRE，最后 Sci-Hub 兜底
+   - 2021 年前：先快速 OA 来源，再 OpenAIRE，最后尝试可用的 Sci-Hub 镜像
    - 2021 年后：先快速 OA 来源，再 OpenAIRE（跳过 Sci-Hub）
-   - 年份未知：先快速 OA 来源，再 OpenAIRE，最后 Sci-Hub 兜底
+   - 年份未知：先快速 OA 来源，再 OpenAIRE，最后尝试可用的 Sci-Hub 镜像
 4. 下载 PDF、校验文件有效性（拒绝 HTML）、按元数据生成文件名（如 `[YYYY] - [Title].pdf`）
 
 ## 限制
 
 - 并非所有论文都能从这些来源获取到 PDF
 - Unpaywall/CORE 只覆盖开放获取（OA）内容
-- Sci-Hub 镜像可能变更或临时不可用
+- Sci-Hub 镜像经常变化，项目当前不提供默认镜像
 - 部分出版商可能会限制自动化下载
+- `r.jina.ai` 回退不会携带 query 参数，因此依赖 query 参数的页面可能无法恢复
+- 100 MiB 的单文件上限用于防止意外的无界下载；大文件可通过 `SCIHUB_MAX_FILE_SIZE` 调整
 
 ## 法律免责声明
 
@@ -389,26 +413,34 @@ codex mcp add paper-download --env PAPER_DOWNLOAD_EMAIL=your-email@university.ed
 ### 运行测试
 
 ```bash
-# 运行所有单元测试（推荐）
-uv run python -m unittest discover -v
+# 运行默认的离线/单元测试（推荐）
+uv run pytest -q
 
-# 仅运行某个测试文件
-uv run python -m unittest tests/test_metadata_utils.py -v
+# 运行需联网的集成测试（显式开启）
+SCIHUB_CLI_RUN_NETWORK_TESTS=1 uv run pytest -q -m integration
+
+# 构建并安装 wheel 后运行安装级 E2E（显式开启）
+SCIHUB_CLI_RUN_INTEGRATION=1 uv run pytest -q -m e2e
 ```
 
 ### 测试结果
 
 测试套件涵盖：
-- ✅ **镜像连接性**：测试所有Sci-Hub镜像站点的可访问性
-- ✅ **下载功能**：使用真实DOI测试实际论文下载
+- ✅ **镜像验证**：确保不会把 HTTP 200 首页误判为论文/PDF 可用
+- ✅ **配置安全**：检查凭据和日志的私有权限
+- ✅ **下载功能**：网络测试显式开启后才检查真实提供方
 - ✅ **元数据提取**：测试论文元数据解析和文件名生成
 - ✅ **安装**：验证正确的包安装和CLI可用性
 
 ### 测试覆盖范围
 
-- **功能测试**：镜像连接性、下载成功、错误处理
+- **功能测试**：论文级镜像验证、下载大小边界、错误处理
 - **元数据测试**：标题提取、作者解析、文件名生成
 - **安装测试**：包导入、命令可用性、版本检查
+
+项目不在 README 中承诺固定成功率。提供方状态、网络、论文是否开放获取、
+限流和可选镜像都会影响结果；请在实际环境中运行上面的集成/E2E 命令，并
+查看失败报告。
 
 ## 许可证
 

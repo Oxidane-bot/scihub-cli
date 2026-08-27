@@ -1,0 +1,47 @@
+name: Network E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      identifier:
+        description: "DOI, arXiv ID, or URL to download"
+        required: false
+        default: "1706.03762"
+        type: string
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Install and download E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Run network E2E
+        env:
+          SCIHUB_CLI_RUN_INTEGRATION: "1"
+          SCIHUB_CLI_E2E_IDENTIFIER: ${{ inputs.identifier || '1706.03762' }}
+        run: uv run --locked pytest -o addopts='' -m e2e -v

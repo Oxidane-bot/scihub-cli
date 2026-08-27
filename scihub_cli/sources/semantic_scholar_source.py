@@ -54,9 +54,7 @@ class SemanticScholarSource(PaperSource):
         self.base_url = "https://api.semanticscholar.org/graph/v1/paper"
         self.session = requests.Session()
         self.session.trust_env = False
-        self.session.headers.update(
-            {"User-Agent": "scihub-cli/1.0 (Semantic Scholar OA lookup)"}
-        )
+        self.session.headers.update({"User-Agent": "scihub-cli/1.0 (Semantic Scholar OA lookup)"})
         if self.api_key:
             self.session.headers.update({"x-api-key": self.api_key})
         adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32)
@@ -106,7 +104,9 @@ class SemanticScholarSource(PaperSource):
             return self._metadata_cache[doi]
 
         if self._is_rate_limited():
-            cooldown = self._rate_limited_until - time.monotonic() if self._rate_limited_until else 0
+            cooldown = (
+                self._rate_limited_until - time.monotonic() if self._rate_limited_until else 0
+            )
             logger.info(
                 "[Semantic Scholar] Skipping API due to recent rate limit (cooldown %.0fs)",
                 cooldown,

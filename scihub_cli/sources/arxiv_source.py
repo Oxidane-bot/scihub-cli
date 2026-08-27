@@ -198,6 +198,11 @@ class ArxivSource(PaperSource):
             logger.warning(f"[arXiv] Request error for {arxiv_id}: {e}")
             raise RetryableError(f"Request error: {e}") from e
 
+        except (RetryableError, PermanentError):
+            # Preserve the classification raised by the status-code or parser checks above.
+            # In particular, RetryableError must reach retry_with_classification unchanged.
+            raise
+
         except Exception as e:
             logger.warning(f"[arXiv] Error parsing response for {arxiv_id}: {e}")
             raise PermanentError(f"Parse error: {e}") from e

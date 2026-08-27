@@ -119,8 +119,12 @@ class OpenAlexSource(PaperSource):
             return self._metadata_cache[doi]
 
         if self._is_rate_limited():
-            cooldown = self._rate_limited_until - time.monotonic() if self._rate_limited_until else 0
-            logger.info("[OpenAlex] Skipping API due to recent rate limit (cooldown %.0fs)", cooldown)
+            cooldown = (
+                self._rate_limited_until - time.monotonic() if self._rate_limited_until else 0
+            )
+            logger.info(
+                "[OpenAlex] Skipping API due to recent rate limit (cooldown %.0fs)", cooldown
+            )
             return None
 
         logger.debug(f"[OpenAlex] Fetching metadata for {doi}")

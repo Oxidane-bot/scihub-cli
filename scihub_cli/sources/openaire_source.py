@@ -97,7 +97,9 @@ class OpenAireSource(PaperSource):
             return self._metadata_cache[doi]
 
         if self._is_rate_limited():
-            cooldown = self._rate_limited_until - time.monotonic() if self._rate_limited_until else 0
+            cooldown = (
+                self._rate_limited_until - time.monotonic() if self._rate_limited_until else 0
+            )
             logger.info(
                 "[OpenAIRE] Skipping API due to recent rate limit (cooldown %.0fs)",
                 cooldown,
@@ -126,9 +128,7 @@ class OpenAireSource(PaperSource):
 
             if response.status_code == 200:
                 data = response.json() or {}
-                results = (
-                    (data.get("response") or {}).get("results") or {}
-                ).get("result") or []
+                results = ((data.get("response") or {}).get("results") or {}).get("result") or []
                 if not isinstance(results, list) or not results:
                     raise PermanentError("DOI not found")
 

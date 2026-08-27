@@ -19,6 +19,7 @@ class Settings:
 
     # File and content validation
     MIN_FILE_SIZE = 10000  # Less than 10KB is suspicious
+    DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MiB safety cap for streamed downloads
     CHUNK_SIZE = 8192
 
     # Filename settings
@@ -38,6 +39,12 @@ class Settings:
         self.timeout = int(os.getenv("SCIHUB_TIMEOUT", self.DEFAULT_TIMEOUT))
         self.retries = int(os.getenv("SCIHUB_RETRIES", self.DEFAULT_RETRIES))
         self.parallel = int(os.getenv("SCIHUB_PARALLEL", self.DEFAULT_PARALLEL))
+        configured_max_file_size = int(
+            os.getenv("SCIHUB_MAX_FILE_SIZE", self.DEFAULT_MAX_FILE_SIZE)
+        )
+        self.max_file_size = (
+            configured_max_file_size if configured_max_file_size > 0 else self.DEFAULT_MAX_FILE_SIZE
+        )
         self.year_threshold = int(os.getenv("SCIHUB_YEAR_THRESHOLD", self.YEAR_THRESHOLD))
         self.enable_year_routing = (
             os.getenv("SCIHUB_ENABLE_ROUTING", str(self.ENABLE_YEAR_ROUTING)).lower() == "true"
@@ -60,7 +67,23 @@ class Settings:
         user_home = str(Path.home())
         self.log_dir = os.path.join(user_home, ".scihub-cli", "logs")
         os.makedirs(self.log_dir, exist_ok=True)
+        # Logs can contain URLs and provider responses.  Keep the config tree
+        # private on POSIX systems just like config.json.
+        if os.name != "nt":
+            try:
+                os.chmod(os.path.dirname(self.log_dir), 0o700)
+                os.chmod(self.log_dir, 0o700)
+            except OSError:
+                # Do not prevent normal CLI startup on filesystems without
+                # POSIX permission support.
+                pass
         self.log_file = os.path.join(self.log_dir, "scihub-dl.log")
+        if os.name != "nt":
+            try:
+                Path(self.log_file).touch(exist_ok=True)
+                os.chmod(self.log_file, 0o600)
+            except OSError:
+                pass
 
     def get_dict(self) -> dict[str, Any]:
         """Return settings as dictionary."""
@@ -69,6 +92,7 @@ class Settings:
             "timeout": self.timeout,
             "retries": self.retries,
             "parallel": self.parallel,
+            "max_file_size": self.max_file_size,
             "email": self.email,
             "year_threshold": self.year_threshold,
             "enable_year_routing": self.enable_year_routing,

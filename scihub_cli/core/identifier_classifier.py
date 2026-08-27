@@ -235,9 +235,7 @@ def is_retryable_identifier(identifier: str) -> bool:
     return bool(re.fullmatch(r"\d{4}\.\d{4,5}(?:v\d+)?", identifier))
 
 
-def select_retry_identifier(
-    normalized_identifier: str, metadata: dict | None
-) -> str:
+def select_retry_identifier(normalized_identifier: str, metadata: dict | None) -> str:
     """Select the best identifier for a retry attempt."""
     if isinstance(metadata, dict):
         for key in ("doi", "DOI"):

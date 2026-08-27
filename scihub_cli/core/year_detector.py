@@ -2,7 +2,6 @@
 Publication year detection using Crossref API.
 """
 
-
 import requests
 
 from ..config.settings import settings

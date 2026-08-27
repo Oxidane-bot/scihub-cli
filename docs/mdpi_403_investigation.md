@@ -86,9 +86,11 @@ MDPI 实施了 **User-Agent 白名单策略**,专门允许学术工具和爬虫�
 
 **实现**:
 ```python
-session.headers.update({
-    'User-Agent': 'curl/8.0.0'  # 或其他 curl 版本
-})
+session.headers.update(
+    {
+        "User-Agent": "curl/8.0.0"  # 或其他 curl 版本
+    }
+)
 ```
 
 ### 方案 2: 使用 Python-urllib User-Agent
@@ -99,9 +101,7 @@ session.headers.update({
 
 **实现**:
 ```python
-session.headers.update({
-    'User-Agent': 'Python-urllib/3.10'
-})
+session.headers.update({"User-Agent": "Python-urllib/3.10"})
 ```
 
 ### 方案 3: 域名特定 User-Agent (最佳实践)
@@ -115,10 +115,10 @@ session.headers.update({
 ```python
 def get_user_agent_for_domain(url: str) -> str:
     domain = urlparse(url).netloc
-    if 'mdpi.com' in domain:
-        return 'curl/8.0.0'
+    if "mdpi.com" in domain:
+        return "curl/8.0.0"
     else:
-        return 'Mozilla/5.0 ...'  # 默认浏览器 UA
+        return "Mozilla/5.0 ..."  # 默认浏览器 UA
 ```
 
 ## 其他发现
@@ -168,22 +168,23 @@ class BasicSession:
 
     def get(self, url: str, **kwargs) -> requests.Response:
         """Simple GET request with domain-specific User-Agent."""
-        kwargs.setdefault('timeout', self.timeout)
+        kwargs.setdefault("timeout", self.timeout)
 
         # 根据域名设置 User-Agent
         from urllib.parse import urlparse
+
         domain = urlparse(url).netloc
 
-        if 'mdpi.com' in domain or 'mdpi-res.com' in domain:
+        if "mdpi.com" in domain or "mdpi-res.com" in domain:
             # MDPI 需要 curl User-Agent
-            self.session.headers.update({
-                'User-Agent': 'curl/8.0.0'
-            })
+            self.session.headers.update({"User-Agent": "curl/8.0.0"})
         else:
             # 其他网站使用浏览器 User-Agent
-            self.session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-            })
+            self.session.headers.update(
+                {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+                }
+            )
 
         return self.session.get(url, **kwargs)
 ```

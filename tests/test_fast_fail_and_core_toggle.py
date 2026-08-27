@@ -293,7 +293,10 @@ def test_download_deadline_interrupts_slow_stream(tmp_path: Path):
 def test_fast_fail_deadline_grace_allows_active_pdf_to_finish(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(FileDownloader, "_FAST_FAIL_DEADLINE_MIN_SECONDS_FOR_GRACE", 0.05)
     monkeypatch.setattr(FileDownloader, "_FAST_FAIL_DEADLINE_PROGRESS_MIN_BYTES", 4)
-    monkeypatch.setattr(FileDownloader, "_FAST_FAIL_DEADLINE_PROGRESS_GRACE_SECONDS", 0.08)
+    # Leave enough scheduling margin for slower supported interpreters and CI
+    # runners; the assertion is about granting one grace period, not an exact
+    # sub-100 ms timing boundary.
+    monkeypatch.setattr(FileDownloader, "_FAST_FAIL_DEADLINE_PROGRESS_GRACE_SECONDS", 0.2)
     monkeypatch.setattr(FileDownloader, "_FAST_FAIL_DEADLINE_MAX_EXTENSIONS", 1)
 
     downloader = FileDownloader(

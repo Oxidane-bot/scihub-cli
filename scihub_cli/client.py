@@ -252,7 +252,10 @@ class SciHubClient:
         """
         start_time = time.time()
         html_events: list[dict[str, Any]] = []
-        if normalized_identifier.startswith("http") and "sciencedirect.com" in normalized_identifier.lower():
+        if (
+            normalized_identifier.startswith("http")
+            and "sciencedirect.com" in normalized_identifier.lower()
+        ):
             try:
                 resolved = self._resolve_sciencedirect_pii_to_doi(normalized_identifier)
             except Exception as e:
@@ -304,10 +307,12 @@ class SciHubClient:
                 html_events.append(dict(snapshot))
 
         source_attempts: list[dict[str, Any]]
-        download_url, metadata, source, source_attempts = self._query_sources_with_identifier_fallback(
-            identifier=identifier,
-            normalized_identifier=normalized_identifier,
-            html_snapshot_callback=_collect_html_snapshot if self.trace_html else None,
+        download_url, metadata, source, source_attempts = (
+            self._query_sources_with_identifier_fallback(
+                identifier=identifier,
+                normalized_identifier=normalized_identifier,
+                html_snapshot_callback=_collect_html_snapshot if self.trace_html else None,
+            )
         )
 
         if not download_url:
@@ -347,6 +352,19 @@ class SciHubClient:
         attempted_sources: set[str] = set()
         max_fallback_rounds = 1
         fallback_round = 0
+        reserved_output_path: str | None = None
+
+        def _release_reserved_output(*, remove_file: bool) -> None:
+            """Release the current output reservation, if the file manager supports it."""
+            nonlocal reserved_output_path
+            if reserved_output_path is None:
+                return
+
+            path = reserved_output_path
+            reserved_output_path = None
+            release = getattr(self.file_manager, "release_output_path", None)
+            if callable(release):
+                release(path, remove_file=remove_file)
 
         while True:
             download_candidates = self._collect_download_candidates(
@@ -373,72 +391,90 @@ class SciHubClient:
 
             # Generate filename from metadata if available
             filename = self._generate_filename(normalized_identifier, metadata)
-            output_path = self.file_manager.get_output_path(filename)
+            reserve = getattr(self.file_manager, "reserve_output_path", None)
+            if callable(reserve):
+                output_path = reserve(filename)
+                reserved_output_path = output_path
+            else:
+                # Keep compatibility with custom FileManager implementations that
+                # predate collision-safe reservations.
+                output_path = self.file_manager.get_output_path(filename)
 
             attempted_errors.clear()
             success = False
             error_msg = None
             active_download_url["url"] = download_candidates[0]
 
-            for index, candidate_url in enumerate(download_candidates, start=1):
-                active_download_url["url"] = candidate_url
-                logger.info(
-                    f"Downloading via candidate URL ({index}/{len(download_candidates)}): {candidate_url}"
-                )
-                push_trace = getattr(self.downloader, "push_trace_context", None)
-                clear_trace = getattr(self.downloader, "clear_trace_context", None)
-                use_download_trace = self.trace_html and callable(push_trace) and callable(clear_trace)
-
-                if use_download_trace:
-                    push_trace(
-                        {
-                            "identifier": normalized_identifier,
-                            "source": source or "unknown_source",
-                            "phase": "download",
-                            "candidate_index": index,
-                            "candidate_total": len(download_candidates),
-                        },
-                        html_snapshot_callback=_collect_html_snapshot,
+            try:
+                for index, candidate_url in enumerate(download_candidates, start=1):
+                    active_download_url["url"] = candidate_url
+                    logger.info(
+                        f"Downloading via candidate URL ({index}/{len(download_candidates)}): {candidate_url}"
                     )
-                try:
-                    try:
-                        success, error_msg = self.downloader.download_file(
-                            candidate_url,
-                            output_path,
-                            progress_callback=_handle_progress if progress_callback else None,
-                        )
-                    except Exception as e:
-                        success = False
-                        error_msg = str(e)
-                        logger.warning(
-                            "Download failed for candidate URL %s: %s", candidate_url, e
-                        )
-                finally:
+                    push_trace = getattr(self.downloader, "push_trace_context", None)
+                    clear_trace = getattr(self.downloader, "clear_trace_context", None)
+                    use_download_trace = (
+                        self.trace_html and callable(push_trace) and callable(clear_trace)
+                    )
+
                     if use_download_trace:
-                        clear_trace()
-                if success:
-                    if self.file_manager.validate_file(output_path):
-                        download_url = candidate_url
-                        break
+                        push_trace(
+                            {
+                                "identifier": normalized_identifier,
+                                "source": source or "unknown_source",
+                                "phase": "download",
+                                "candidate_index": index,
+                                "candidate_total": len(download_candidates),
+                            },
+                            html_snapshot_callback=_collect_html_snapshot,
+                        )
+                    try:
+                        try:
+                            success, error_msg = self.downloader.download_file(
+                                candidate_url,
+                                output_path,
+                                progress_callback=_handle_progress if progress_callback else None,
+                            )
+                        except Exception as e:
+                            success = False
+                            error_msg = str(e)
+                            logger.warning(
+                                "Download failed for candidate URL %s: %s", candidate_url, e
+                            )
+                    finally:
+                        if use_download_trace:
+                            clear_trace()
+                    if success:
+                        if self.file_manager.validate_file(output_path):
+                            download_url = candidate_url
+                            _release_reserved_output(remove_file=False)
+                            break
 
-                    error_msg = "Downloaded file validation failed"
-                    logger.error(error_msg)
-                    if os.path.exists(output_path):
-                        os.unlink(output_path)
-                    success = False
+                        error_msg = "Downloaded file validation failed"
+                        logger.error(error_msg)
+                        if os.path.exists(output_path):
+                            os.unlink(output_path)
+                        success = False
 
-                if "sci-hub" in candidate_url.lower():
-                    logger.warning("Sci-Hub download failed, invalidating mirror cache")
-                    scihub = [
-                        s for s in self.source_manager.sources.values() if s.name == "Sci-Hub"
-                    ]
-                    if scihub:
-                        scihub[0].mirror_manager.invalidate_cache()
+                    if "sci-hub" in candidate_url.lower():
+                        logger.warning("Sci-Hub download failed, invalidating mirror cache")
+                        scihub = [
+                            s for s in self.source_manager.sources.values() if s.name == "Sci-Hub"
+                        ]
+                        if scihub:
+                            scihub[0].mirror_manager.invalidate_cache()
 
-                attempted_errors.append((candidate_url, error_msg or "Download failed"))
+                    attempted_errors.append((candidate_url, error_msg or "Download failed"))
+            except Exception:
+                _release_reserved_output(remove_file=True)
+                raise
 
             if success:
                 break
+
+            # No candidate produced a valid file.  Remove the reservation and any
+            # partial output before trying another source or returning failure.
+            _release_reserved_output(remove_file=True)
 
             if (
                 fallback_round >= max_fallback_rounds
@@ -580,7 +616,9 @@ class SciHubClient:
                 force_sequential=force_sequential,
             )
 
-        download_url, metadata, source = self.source_manager.get_pdf_url_with_metadata(lookup_identifier)
+        download_url, metadata, source = self.source_manager.get_pdf_url_with_metadata(
+            lookup_identifier
+        )
         return download_url, metadata, source, []
 
     def _persist_html_snapshots(
@@ -849,9 +887,12 @@ class SciHubClient:
         try:
             with open(input_file, encoding="utf-8") as f:
                 lines = f.readlines()
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Error reading input file: {e}")
-            return []
+            # A missing or unreadable input is a caller error, not an empty batch.
+            # Propagating it lets the CLI return a non-zero exit status instead of
+            # reporting a misleading successful run with zero papers.
+            raise
 
         # Filter out comments and empty lines, and extract clean identifiers.
         extracted_entries: list[tuple[str, str]] = []
@@ -900,7 +941,9 @@ class SciHubClient:
 
         tasks: list[tuple[str, str, list[tuple[int, str, str, str]]]] = []
         for dedupe_key, entries in normalized_groups.items():
-            variants = [cleaned_identifier for _, _original, cleaned_identifier, _normalized in entries]
+            variants = [
+                cleaned_identifier for _, _original, cleaned_identifier, _normalized in entries
+            ]
             representative = select_best_identifier_variant(variants)
             tasks.append((dedupe_key, representative, entries))
 
@@ -945,7 +988,12 @@ class SciHubClient:
             base_result = unique_results[task_index]
             if base_result is None:
                 continue
-            for original_index, original_identifier, _cleaned_identifier, original_normalized in entries:
+            for (
+                original_index,
+                original_identifier,
+                _cleaned_identifier,
+                original_normalized,
+            ) in entries:
                 results[original_index] = replace(
                     base_result,
                     identifier=original_identifier,

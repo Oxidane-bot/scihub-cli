@@ -120,3 +120,41 @@ def test_download_file_html_response_cloudscraper_fallback(tmp_path, monkeypatch
     success, error = downloader.download_file("https://example.org/paper.pdf", str(output))
     assert success, error
     assert output.read_bytes()[:4] == b"%PDF"
+
+
+def test_curl_cffi_fallback_streams_response_without_buffering_content(tmp_path, monkeypatch):
+    pdf_bytes = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
+
+    class _StreamingResponse(_StubResponse):
+        @property
+        def content(self):
+            raise AssertionError("curl fallback must not access response.content")
+
+    response = _StreamingResponse(
+        headers={
+            "Content-Type": "application/pdf",
+            "Content-Length": str(len(pdf_bytes)),
+        },
+        content=pdf_bytes,
+    )
+
+    class _CurlSession:
+        def get(self, url, **kwargs):  # noqa: ARG002
+            assert kwargs.get("stream") is True
+            return response
+
+    curl_requests = types.SimpleNamespace(Session=_CurlSession)
+    monkeypatch.setitem(
+        sys.modules,
+        "curl_cffi",
+        types.SimpleNamespace(requests=curl_requests),
+    )
+
+    downloader = FileDownloader(session=_ForbiddenSession(), timeout=5)
+    output = tmp_path / "curl-streamed.pdf"
+    success, error = downloader._download_with_curl_cffi(
+        "https://example.org/paper.pdf", str(output)
+    )
+
+    assert success, error
+    assert output.read_bytes()[:4] == b"%PDF"

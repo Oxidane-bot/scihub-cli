@@ -19,11 +19,18 @@ def test_import():
 
 
 def test_command():
-    """Test running the command."""
-    print("\nTesting command availability...")
+    """Test the CLI through the interpreter running this test suite.
+
+    Invoking the module avoids relying on a shell PATH that may not include the
+    environment where the package was installed (for example, a CI venv).
+    """
+    print("\nTesting command availability through the active interpreter...")
     try:
         result = subprocess.run(
-            ["scihub-cli", "--version"], capture_output=True, text=True, check=True
+            [sys.executable, "-m", "scihub_cli", "--version"],
+            capture_output=True,
+            text=True,
+            check=True,
         )
         print(f"Command available: {result.stdout.strip()}")
     except subprocess.CalledProcessError as e:

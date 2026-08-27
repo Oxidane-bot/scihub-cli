@@ -20,8 +20,13 @@ def test_e2e_install_and_download():
     script = repo_root / "scripts" / "integration_test.sh"
     assert script.exists(), f"Missing integration test script: {script}"
 
+    command = ["bash", str(script)]
+    identifier = os.getenv("SCIHUB_CLI_E2E_IDENTIFIER")
+    if identifier:
+        command.extend(["--identifier", identifier])
+
     proc = subprocess.run(
-        ["bash", str(script)],
+        command,
         cwd=str(repo_root),
         text=True,
         capture_output=True,

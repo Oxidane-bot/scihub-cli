@@ -12,18 +12,18 @@ A command-line tool for batch downloading academic papers with multi-source supp
   - **OpenAIRE**: Repository-link fallback after faster OA sources (no email required)
   - **arXiv**: Prioritized for preprints (free, no API key needed)
   - **Unpaywall**: For open access papers (requires email)
-  - **Sci-Hub**: Fallback for older papers (coverage-driven, slower)
+  - **Sci-Hub**: Optional fallback for older papers when a user-supplied mirror is available
   - **CORE**: Additional OA fallback (disabled by default; opt in with `--enable-core`)
 - **Smart Year-Based Routing**:
-  - Papers before 2021: OA sources first, Sci-Hub fallback
+  - Papers before 2021: OA sources first, optional Sci-Hub fallback
   - Papers 2021+: OA sources only (skip Sci-Hub)
 - **Parallel Source Querying**: Fast sources queried in parallel with slow-source fallback
-- **Parallel Mirror Testing**: Quickly finds working Sci-Hub mirrors (typically <2s)
+- **Article-Specific Mirror Testing**: Validates a supplied mirror against an article page and PDF link
 - **Smart Metadata Caching**: Avoids redundant API calls across sources
 - **Smart Fallback**: Automatically tries alternative sources if primary fails
 - **Flexible Input**: Download papers using DOIs, arXiv IDs, or URLs
 - Batch processing from a text file
-- Automatic mirror selection and testing
+- Validates explicitly supplied mirrors before using them
 - Customizable output directory
 - Robust error handling and retries
 - PDF validation (rejects HTML files)
@@ -31,6 +31,16 @@ A command-line tool for batch downloading academic papers with multi-source supp
 - **Metadata-based Filenames**: Automatically names files as `[YYYY] - [Title].pdf` for easy organization
 
 ## Recent Updates
+
+### v0.5.3
+
+- Repaired the wheel-install network E2E and added CI for Python 3.10-3.14
+- Added test, lint, build, and installed-wheel checks before PyPI publishing
+- Fixed CLI/package version drift, unreadable-input exit codes, and arXiv retry classification
+- Prevented existing or concurrent downloads from being overwritten by filename collisions
+- Removed stale default Sci-Hub mirrors; mirror domains must be supplied and pass an article-specific check
+- Added a streamed download size limit and private permissions for local configuration and logs
+- Stopped forwarding landing-page query strings to the optional `r.jina.ai` reader fallback
 
 ### v0.5.2
 
@@ -257,11 +267,11 @@ The email is saved to `~/.scihub-cli/config.json` and sent only to Unpaywall for
 
 ```
 usage: scihub-cli [-h] [-o OUTPUT] [-m MIRROR] [-t TIMEOUT] [-r RETRIES] [-p PARALLEL]
-                  [--enable-core] [--fast-fail] [--academic-only]
+                  [--enable-core] [--fast-fail] [--no-fast-fail] [--academic-only]
                   [--no-academic-only]
                   [--email EMAIL] [-v] [--version] input_file
 
-Download academic papers from Sci-Hub and Unpaywall in batch mode.
+Download academic papers from multiple open-access sources, with optional Sci-Hub fallback.
 
 positional arguments:
   input_file            Text file containing DOIs or URLs (one per line)
@@ -291,7 +301,10 @@ options:
   --trace-html-max-chars TRACE_HTML_MAX_CHARS
                         Maximum characters per HTML snapshot file (default: 2000000)
   --enable-core         Enable CORE source lookups (disabled by default to avoid rate-limit slowdown)
-  --fast-fail           Skip bypass and HTML recovery on permanent failures (faster, may reduce success rate)
+  --fast-fail           Skip bypass and HTML recovery on permanent failures (default)
+  --no-fast-fail        Allow slower bypass and HTML recovery attempts
+  --download-deadline DOWNLOAD_DEADLINE
+                        Hard per-attempt download deadline in seconds
   --academic-only       Filter out obvious non-academic URLs before downloading (default)
   --no-academic-only    Disable academic-only filtering and process all input URLs
   --email EMAIL         Email for Unpaywall API (saves to config file)
@@ -310,6 +323,16 @@ scihub-cli stores configuration in `~/.scihub-cli/config.json`:
 ```
 
 You can edit this file directly or use `--email` to update it.
+
+The directory is created with mode `0700` and the file with mode `0600` on
+POSIX systems. Downloads are capped at 100 MiB by default; set the positive
+`SCIHUB_MAX_FILE_SIZE` environment variable (bytes) to use a different cap.
+
+Sci-Hub mirrors are intentionally not bundled: mirror domains change often,
+and a home page returning HTTP 200 does not prove that it can serve a paper.
+Use `--mirror https://...` to supply one. The CLI checks an article-specific
+DOI page and requires a concrete PDF/download link before using it. Set
+`SCIHUB_MIRROR_PROBE_DOI` to choose a different probe DOI when needed.
 
 ### Examples
 
@@ -345,7 +368,7 @@ scihub-cli --enable-core papers.txt
 # Specify output directory
 scihub-cli -o research/papers papers.txt
 
-# Use specific mirror
+# Use a user-supplied mirror (it is article-checked before use)
 scihub-cli -m https://sci-hub.se papers.txt
 
 # Increase verbosity
@@ -358,9 +381,9 @@ The tool uses intelligent multi-source routing:
 
 1. **Year Detection**: Queries Crossref API to determine publication year
 2. **Smart Routing**:
-   - Papers before 2021 → Try fast OA sources, then OpenAIRE, then Sci-Hub
+   - Papers before 2021 → Try fast OA sources, then OpenAIRE, then an optional Sci-Hub mirror
    - Papers 2021+ → Try fast OA sources, then OpenAIRE (skip Sci-Hub)
-   - Unknown year → Try fast OA sources, then OpenAIRE, then Sci-Hub
+   - Unknown year → Try fast OA sources, then OpenAIRE, then an optional Sci-Hub mirror
 3. **Download Process**:
    - Get PDF URL from selected source
    - Download with progress tracking
@@ -369,9 +392,9 @@ The tool uses intelligent multi-source routing:
 
 ### Why Multi-Source?
 
-- **Sci-Hub**: Strong fallback for pre-2021 coverage, but stopped updating in 2020
-- **Unpaywall**: Best for 2021+ open access papers (25-35% coverage for recent papers)
-- **Combined**: OA-first speed with Sci-Hub fallback for older literature
+- **Sci-Hub**: A conditional fallback for older literature; no mirror is shipped as a verified default
+- **Unpaywall**: Open-access discovery that requires an email address
+- **Combined**: OA-first routing with optional, article-checked Sci-Hub fallback
 
 ### Domain-Specific User-Agents
 
@@ -381,18 +404,19 @@ The tool automatically adapts HTTP headers for different publishers:
 
 ## Coverage and Success Rates
 
-| Year Range | Primary Source | Success Rate |
-|-----------|---------------|--------------|
-| Before 2021 | OA first (Sci-Hub fallback) | 85-90% |
-| 2021+ | OA (Unpaywall/arXiv/CORE) | 25-35% |
-| Overall | Multi-source | 75-80% |
+There is no maintained success-rate benchmark for this project. Results vary
+with the identifier, publication date, OA availability, provider rate limits,
+network conditions, and whether a working optional mirror or Unpaywall email
+is configured. The project does not promise a fixed percentage.
 
 ## Limitations
 
 - Not all papers are available through Sci-Hub or Unpaywall
 - Unpaywall only covers open access papers
 - Some publishers may block automated downloads
-- Sci-Hub mirrors may change or become unavailable
+- Sci-Hub mirrors change frequently; no default mirror is currently shipped
+- `r.jina.ai` fallback requests omit query strings, so pages that require a query parameter may not recover
+- A 100 MiB per-file cap prevents accidental/unbounded downloads; large papers require `SCIHUB_MAX_FILE_SIZE`
 
 ## Use with AI Agents (MCP)
 
@@ -445,13 +469,14 @@ The project includes comprehensive tests for multi-source functionality:
 ### Running Tests
 
 ```bash
-# Run all tests
-cd tests
-uv run python test_functionality.py
-uv run python -m unittest test_metadata_utils.py -v
+# Run the default offline/unit test suite
+uv run pytest -q
 
-# Or run all unit tests
-uv run python -m unittest discover -v
+# Run opt-in network integration tests
+SCIHUB_CLI_RUN_NETWORK_TESTS=1 uv run pytest -q -m integration
+
+# Run the installed-package E2E suite after building/installing the wheel
+SCIHUB_CLI_RUN_INTEGRATION=1 uv run pytest -q -m e2e
 ```
 
 ### Test Coverage
@@ -460,19 +485,15 @@ The test suite covers:
 
 - ✅ **Multi-Source Download**: Tests OA-first routing with Sci-Hub fallback for pre-2021 papers
 - ✅ **PDF Validation**: Verifies downloaded files have valid PDF headers
-- ✅ **Mirror Connectivity**: Tests all Sci-Hub mirrors for accessibility
-- ✅ **Metadata Extraction**: Tests Unpaywall API metadata retrieval
+- ✅ **Mirror Validation**: Ensures HTTP 200 home pages are not mistaken for article/PDF availability
+- ✅ **Configuration Safety**: Checks private permissions for credentials and logs
+- ✅ **Metadata Extraction**: Tests provider metadata parsing (network tests are opt-in)
 - ✅ **Filename Generation**: Tests filename sanitization and edge cases
 
-### Recent Test Results
-
-```
-Multi-source download: 2/2 PASS
-- 2013 paper (944 KB) via OA-first (Sci-Hub fallback if OA fails) ✓
-- 2021 paper (1.6 MB) via OA (Sci-Hub skipped) ✓
-PDF validation: All valid ✓
-Metadata extraction: PASS ✓
-```
+Network/provider availability is intentionally not represented as a fixed
+number in this README. Run the opt-in integration commands above against the
+environment where the CLI will be used and inspect the generated failure
+report for the current result.
 
 ## License
 

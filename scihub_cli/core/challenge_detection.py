@@ -130,8 +130,10 @@ def normalize_download_url(url: str) -> str:
         parsed = parsed._replace(scheme="https")
 
     if (
-        "mdpi.com" in host or "mdpi-res.com" in host or "res.mdpi.com" in host
-    ) and path.lower().endswith("/pdf") and not query:
+        ("mdpi.com" in host or "mdpi-res.com" in host or "res.mdpi.com" in host)
+        and path.lower().endswith("/pdf")
+        and not query
+    ):
         parsed = parsed._replace(query="download=1")
 
     return urlunparse(parsed)
@@ -222,9 +224,9 @@ def derive_alternate_pdf_urls(url: str) -> list[str]:
                 out.append(f"https://www.tandfonline.com/doi/pdf/{doi}?download=true")
 
     if "papers.ssrn.com" in host and "/sol3/delivery.cfm" in lowered_path:
-        abstract_id = (
-            (query_params.get("abstractid") or query_params.get("abstract_id") or [None])[0]
-        )
+        abstract_id = (query_params.get("abstractid") or query_params.get("abstract_id") or [None])[
+            0
+        ]
         if abstract_id:
             base = f"https://papers.ssrn.com/sol3/Delivery.cfm?abstractid={abstract_id}"
             out.extend(
