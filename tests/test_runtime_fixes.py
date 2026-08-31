@@ -65,7 +65,7 @@ def test_package_and_project_versions_are_aligned():
             project_version = line.split('"', 2)[1]
             break
 
-    assert project_version == "0.5.3"
+    assert project_version == "0.5.4"
     assert scihub_cli.__version__ == project_version
 
 

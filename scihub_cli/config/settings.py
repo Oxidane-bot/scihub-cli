@@ -14,7 +14,9 @@ class Settings:
     DEFAULT_OUTPUT_DIR = "./downloads"
     DEFAULT_TIMEOUT = 15
     DEFAULT_RETRIES = 3
-    DEFAULT_PARALLEL = 16
+    # Keep the default conservative so multiple requests to the same OA host
+    # do not trigger provider rate limits during ordinary batch downloads.
+    DEFAULT_PARALLEL = 4
     # No default email - user must configure
 
     # File and content validation

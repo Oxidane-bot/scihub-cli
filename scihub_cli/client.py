@@ -54,6 +54,11 @@ from .utils.retry import RetryConfig
 
 logger = get_logger(__name__)
 
+# A source lookup can return a stale or temporarily unavailable endpoint.  A
+# small, explicit cap lets us move through a couple of alternate providers
+# without turning a single paper into an unbounded retry loop.
+MAX_SOURCE_FALLBACK_ROUNDS = 2
+
 
 class SciHubClient:
     """Main client interface with multi-source support (Sci-Hub, Unpaywall, arXiv, CORE)."""
@@ -348,9 +353,10 @@ class SciHubClient:
         success = False
         error_msg: str | None = None
         attempted_errors: list[tuple[str, str]] = []
+        tried_download_urls: set[str] = set()
 
         attempted_sources: set[str] = set()
-        max_fallback_rounds = 1
+        max_fallback_rounds = MAX_SOURCE_FALLBACK_ROUNDS
         fallback_round = 0
         reserved_output_path: str | None = None
 
@@ -367,13 +373,13 @@ class SciHubClient:
                 release(path, remove_file=remove_file)
 
         while True:
-            download_candidates = self._collect_download_candidates(
+            all_download_candidates = self._collect_download_candidates(
                 primary_url=download_url,
                 source=source,
                 metadata=metadata,
                 source_attempts=source_attempts,
             )
-            if not download_candidates:
+            if not all_download_candidates:
                 error = f"No valid download URL candidates for {normalized_identifier}"
                 logger.error(error)
                 return _build_result(
@@ -385,6 +391,29 @@ class SciHubClient:
                     source_attempts=source_attempts,
                     html_snapshots=self._persist_html_snapshots(identifier, html_events),
                 )
+
+            # Source metadata is cumulative across fallback rounds.  Do not
+            # download a URL again when a provider ignores ``exclude_sources``
+            # or re-advertises a URL already exercised in an earlier round.
+            download_candidates = [
+                candidate
+                for candidate in all_download_candidates
+                if (normalized_candidate := self._normalize_download_candidate(candidate))
+                and normalized_candidate not in tried_download_urls
+            ]
+            if not download_candidates:
+                error_msg = "No untried download URL candidates remain"
+                source_attempts.append(
+                    {
+                        "source": source or "source_manager",
+                        "phase": "download",
+                        "status": "skipped",
+                        "reason": "all_candidates_already_tried",
+                        "tried_urls": sorted(tried_download_urls),
+                    }
+                )
+                logger.warning(error_msg)
+                break
             logger.debug(
                 f"Download URL candidates ({len(download_candidates)}): {download_candidates}"
             )
@@ -400,14 +429,24 @@ class SciHubClient:
                 # predate collision-safe reservations.
                 output_path = self.file_manager.get_output_path(filename)
 
-            attempted_errors.clear()
             success = False
             error_msg = None
+            round_errors: list[tuple[str, str]] = []
             active_download_url["url"] = download_candidates[0]
 
             try:
                 for index, candidate_url in enumerate(download_candidates, start=1):
                     active_download_url["url"] = candidate_url
+                    normalized_candidate = self._normalize_download_candidate(candidate_url)
+                    if normalized_candidate:
+                        tried_download_urls.add(normalized_candidate)
+                    candidate_source = self._source_for_candidate_url(
+                        candidate_url,
+                        fallback_source=source,
+                        source_attempts=source_attempts,
+                    )
+                    if candidate_source:
+                        attempted_sources.add(candidate_source)
                     logger.info(
                         f"Downloading via candidate URL ({index}/{len(download_candidates)}): {candidate_url}"
                     )
@@ -421,7 +460,7 @@ class SciHubClient:
                         push_trace(
                             {
                                 "identifier": normalized_identifier,
-                                "source": source or "unknown_source",
+                                "source": candidate_source or "unknown_source",
                                 "phase": "download",
                                 "candidate_index": index,
                                 "candidate_total": len(download_candidates),
@@ -447,6 +486,7 @@ class SciHubClient:
                     if success:
                         if self.file_manager.validate_file(output_path):
                             download_url = candidate_url
+                            source = candidate_source or source
                             _release_reserved_output(remove_file=False)
                             break
 
@@ -464,7 +504,19 @@ class SciHubClient:
                         if scihub:
                             scihub[0].mirror_manager.invalidate_cache()
 
-                    attempted_errors.append((candidate_url, error_msg or "Download failed"))
+                    failure_reason = error_msg or "Download failed"
+                    source_attempts.append(
+                        {
+                            "source": candidate_source or source or "unknown_source",
+                            "phase": "download",
+                            "priority": index,
+                            "status": "download_failed",
+                            "url": candidate_url,
+                            "error": failure_reason,
+                        }
+                    )
+                    attempted_errors.append((candidate_url, failure_reason))
+                    round_errors.append((candidate_url, failure_reason))
             except Exception:
                 _release_reserved_output(remove_file=True)
                 raise
@@ -476,10 +528,8 @@ class SciHubClient:
             # partial output before trying another source or returning failure.
             _release_reserved_output(remove_file=True)
 
-            if (
-                fallback_round >= max_fallback_rounds
-                or not self.fast_fail
-                or not should_retry_sources_after_download_failure(error_msg or "")
+            if fallback_round >= max_fallback_rounds or not any(
+                should_retry_sources_after_download_failure(reason) for _, reason in round_errors
             ):
                 break
 
@@ -487,28 +537,73 @@ class SciHubClient:
             if not is_retryable_identifier(retry_identifier):
                 break
 
-            if source:
-                attempted_sources.add(source)
+            # Every candidate in this round has been exercised.  Mark the
+            # source names represented by their query attempts so the next
+            # lookup cannot hand the same failed provider back to us.
+            attempted_sources.update(
+                self._source_names_for_candidates(
+                    download_candidates,
+                    fallback_source=source,
+                    source_attempts=source_attempts,
+                )
+            )
 
             fallback_round += 1
             logger.info(
                 f"Retrying sources after download failure (round {fallback_round}/{max_fallback_rounds})"
             )
-            download_url, metadata, source, retry_attempts = (
-                self.source_manager.get_pdf_url_with_metadata_and_trace(
-                    retry_identifier,
-                    html_snapshot_callback=_collect_html_snapshot if self.trace_html else None,
-                    exclude_sources=attempted_sources if attempted_sources else None,
-                    force_sequential=True,
-                )
+            source_attempts.append(
+                {
+                    "source": source or "source_manager",
+                    "phase": "source_fallback",
+                    "priority": fallback_round,
+                    "status": "retrying",
+                    "reason": "download_failure",
+                    "error": error_msg or "Download failed",
+                    "failed_candidates": [
+                        {"url": url, "error": reason} for url, reason in round_errors
+                    ],
+                    "excluded_sources": sorted(attempted_sources),
+                }
             )
+            retry_result = self._query_source_manager(
+                retry_identifier,
+                html_snapshot_callback=_collect_html_snapshot if self.trace_html else None,
+                exclude_sources=attempted_sources if attempted_sources else None,
+                force_sequential=True,
+            )
+            download_url, metadata, source, retry_attempts = retry_result
             if not download_url:
                 break
             if retry_attempts:
-                if source_attempts:
-                    source_attempts.extend(retry_attempts)
-                else:
-                    source_attempts = retry_attempts
+                source_attempts.extend(retry_attempts)
+
+            if source and source in attempted_sources:
+                # Custom source managers may ignore ``exclude_sources``.  A
+                # repeated provider may still advertise a genuinely new URL,
+                # so only stop when this lookup has no untried candidate.
+                retry_candidates = self._collect_download_candidates(
+                    primary_url=download_url,
+                    source=source,
+                    metadata=metadata,
+                    source_attempts=source_attempts,
+                )
+                has_new_candidate = any(
+                    (normalized_candidate := self._normalize_download_candidate(candidate))
+                    and normalized_candidate not in tried_download_urls
+                    for candidate in retry_candidates
+                )
+                if not has_new_candidate:
+                    source_attempts.append(
+                        {
+                            "source": source,
+                            "phase": "source_fallback",
+                            "priority": fallback_round,
+                            "status": "skipped",
+                            "reason": "source_already_attempted",
+                        }
+                    )
+                    break
 
         if progress_callback:
             progress_callback(
@@ -683,6 +778,65 @@ class SciHubClient:
         if not cleaned:
             return "unknown"
         return cleaned[:120]
+
+    def _source_for_candidate_url(
+        self,
+        candidate_url: str,
+        *,
+        fallback_source: str | None,
+        source_attempts: list[dict[str, Any]] | None,
+    ) -> str | None:
+        """Resolve the source that advertised a candidate download URL."""
+        normalized_candidate = self._normalize_download_candidate(candidate_url)
+        if normalized_candidate and source_attempts:
+            for attempt in source_attempts:
+                if not isinstance(attempt, dict):
+                    continue
+                advertised_raw = attempt.get("pdf_url")
+                if not isinstance(advertised_raw, str):
+                    continue
+                advertised_url = self._normalize_download_candidate(advertised_raw)
+                if advertised_url == normalized_candidate:
+                    advertised_source = attempt.get("source")
+                    if isinstance(advertised_source, str) and advertised_source:
+                        return advertised_source
+        return fallback_source
+
+    def _source_names_for_candidates(
+        self,
+        candidate_urls: list[str],
+        *,
+        fallback_source: str | None,
+        source_attempts: list[dict[str, Any]] | None,
+    ) -> set[str]:
+        """Return providers whose advertised URLs were tried in a round."""
+        source_names: set[str] = set()
+        if fallback_source:
+            source_names.add(fallback_source)
+
+        normalized_candidates = {
+            normalized
+            for candidate in candidate_urls
+            if (normalized := self._normalize_download_candidate(candidate))
+        }
+        if not normalized_candidates or not source_attempts:
+            return source_names
+
+        for attempt in source_attempts:
+            if not isinstance(attempt, dict):
+                continue
+            advertised_raw = attempt.get("pdf_url")
+            if not isinstance(advertised_raw, str):
+                continue
+            advertised_url = self._normalize_download_candidate(advertised_raw)
+            advertised_source = attempt.get("source")
+            if (
+                advertised_url in normalized_candidates
+                and isinstance(advertised_source, str)
+                and advertised_source
+            ):
+                source_names.add(advertised_source)
+        return source_names
 
     def _collect_download_candidates(
         self,
@@ -934,9 +1088,14 @@ class SciHubClient:
 
         normalized_groups: dict[str, list[tuple[int, str, str, str]]] = {}
         for index, (original_identifier, identifier) in enumerate(extracted_entries):
-            normalized = self.doi_processor.normalize_doi(identifier)
+            # Use a source-aware identity key for batching.  The public
+            # ``normalize_doi`` result is still retained per input below so
+            # DownloadResult keeps the original URL/DOI semantics, while
+            # arXiv and PMC URL/ID variants share one download task.
+            normalized = self.doi_processor.normalize_identifier(identifier)
+            result_normalized = self.doi_processor.normalize_doi(identifier)
             normalized_groups.setdefault(normalized, []).append(
-                (index, original_identifier, identifier, normalized)
+                (index, original_identifier, identifier, result_normalized)
             )
 
         tasks: list[tuple[str, str, list[tuple[int, str, str, str]]]] = []

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from ..sources.base import PaperSource
 from ..utils.logging import get_logger
+from .doi_processor import DOIProcessor
 
 logger = get_logger(__name__)
 
@@ -95,6 +96,19 @@ class SourceManager:
         parsed = urlparse(doi)
         is_url_input = parsed.scheme in {"http", "https"} and parsed.netloc
 
+        # A URL that already names a PDF is a complete download instruction.
+        # Route it directly instead of asking arXiv for metadata first.  This
+        # matters in particular for arXiv PDF URLs: the metadata API is slower,
+        # rate-limited, and unnecessary when the caller supplied the exact
+        # document endpoint.  Keep this check before the broader arXiv URL
+        # branch so /abs/ and /html/ URLs retain their metadata-aware routing.
+        if is_url_input and "Direct PDF" in self.sources:
+            path_lower = parsed.path.lower()
+            query_lower = (parsed.query or "").lower()
+            if path_lower.endswith(".pdf") or ".pdf" in query_lower:
+                logger.info("[Router] Detected direct PDF URL input, using Direct PDF only")
+                return self._filter_chain(self._build_chain(["Direct PDF"]), exclude_sources)
+
         # arXiv URLs: use arXiv fast path with URL handlers as fallback.
         if is_url_input and "arXiv" in self.sources and self.sources["arXiv"].can_handle(doi):
             logger.info(
@@ -119,6 +133,21 @@ class SourceManager:
                         "CORE",
                         "Sci-Hub",
                     ]
+                ),
+                exclude_sources,
+            )
+
+        # A bare PMCID has no DOI or URL scheme for the generic OA chain to
+        # recognize.  Route it through the article-aware PMC source first;
+        # Europe PMC remains the provider fallback when the PMC page or PDF
+        # endpoint is temporarily unavailable.  This branch intentionally
+        # uses DOIProcessor's trusted extraction rather than a loose regex so
+        # an arbitrary URL/query containing ``PMC...`` cannot enter this path.
+        if DOIProcessor.extract_pmc_id(doi):
+            logger.info("[Router] Detected PMCID, using PMC -> Europe PMC fallback chain")
+            return self._filter_chain(
+                self._build_chain(
+                    ["PMC", "Europe PMC", "Europe PMC OA", OPENAIRE_FALLBACK, "Sci-Hub"]
                 ),
                 exclude_sources,
             )
@@ -404,13 +433,18 @@ class SourceManager:
         html_snapshot_callback: HtmlSnapshotCallback | None = None,
     ) -> tuple[str | None, dict | None, str | None, list[SourceAttempt]]:
         """
-        Query multiple sources in parallel, return first successful result.
+        Query multiple sources in parallel, returning the best successful result.
 
         Strategy:
         - All sources query concurrently
-        - First source to return a valid PDF URL wins
-        - Respects source priority: if higher-priority source succeeds, use it
-        - Cancel remaining queries once we have a good result
+        - Keep every successful URL in the attempt trace
+        - Respect source priority when selecting the primary result
+
+        Waiting for the submitted fast-source queries to finish is deliberate:
+        the URL returned by a metadata provider is only a candidate and can
+        still fail during the actual file download.  Retaining the other
+        providers' URLs lets the client try those candidates without issuing
+        another round of metadata requests.
 
         Args:
             doi: The DOI to look up
@@ -427,7 +461,6 @@ class SourceManager:
         # Track results by source name for priority handling
         results: dict[str, tuple[str | None, dict | None]] = {}
         attempts_by_source: dict[str, SourceAttempt] = {}
-        completed_sources = set()
 
         def query_single_source(
             source: PaperSource, priority: int
@@ -494,40 +527,9 @@ class SourceManager:
                 try:
                     source_name, pdf_url, metadata, attempt = future.result()
                     attempts_by_source[source_name] = attempt
-                    completed_sources.add(source_name)
-
                     if pdf_url:
                         results[source_name] = (pdf_url, metadata)
                         logger.info(f"[Router] {source_name} found PDF (parallel)")
-
-                        # Check if this is the highest priority source that could succeed
-                        # If so, we can return immediately
-                        for priority_source in chain:
-                            if priority_source.name == source_name:
-                                # This is our best result so far, and it's in priority order
-                                # Cancel remaining futures
-                                for f in future_to_source:
-                                    f.cancel()
-                                self._mark_cancelled_sources(
-                                    chain=chain,
-                                    attempts_by_source=attempts_by_source,
-                                    reason=f"Cancelled after {source_name} succeeded",
-                                )
-                                logger.info(
-                                    f"[Router] SUCCESS: Using {source_name} (parallel, priority)"
-                                )
-                                return (
-                                    pdf_url,
-                                    metadata,
-                                    source_name,
-                                    self._sort_attempts(chain, attempts_by_source),
-                                )
-                            elif priority_source.name in results:
-                                # A higher priority source already has a result
-                                break
-                            elif priority_source.name not in completed_sources:
-                                # Higher priority source not done yet, wait for it
-                                break
                     else:
                         logger.debug(f"[Router] {source_name} did not find PDF (parallel)")
 
@@ -541,8 +543,10 @@ class SourceManager:
                         "error": f"future_exception: {e}",
                     }
         finally:
-            # Avoid blocking on lower-priority/slow sources once we have enough information.
-            executor.shutdown(wait=False, cancel_futures=True)
+            # ``as_completed`` drains every submitted future.  Wait for the
+            # executor to close cleanly so no source result is lost after the
+            # primary URL has already been selected.
+            executor.shutdown(wait=True, cancel_futures=False)
 
         # All futures done, return best result by priority
         attempts = self._sort_attempts(chain, attempts_by_source)

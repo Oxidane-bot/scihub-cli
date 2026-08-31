@@ -32,6 +32,18 @@ A command-line tool for batch downloading academic papers with multi-source supp
 
 ## Recent Updates
 
+### v0.5.4
+
+- Retained unique alternate candidate URLs and added bounded cross-source fallback when a primary
+  candidate fails
+- Safely deduplicated equivalent arXiv, PMC, and DOI inputs, and routed direct arXiv PDF URLs
+  straight to download
+- Added crash-safe process reservations with stale/dead-process recovery
+- Respected provider `Retry-After` responses and added host throttling; improved OpenAIRE parsing
+  and added bounded deadline grace for OSTI downloads
+- Tuned the default download parallelism to `4` based on open-access batch benchmarks; increase it
+  explicitly with `--parallel` when appropriate
+
 ### v0.5.3
 
 - Repaired the wheel-install network E2E and added CI for Python 3.10-3.14
@@ -65,7 +77,14 @@ A command-line tool for batch downloading academic papers with multi-source supp
 - Added Europe PMC OA source (biomedical OA coverage, no email required)
 - Improved fail-fast behavior for challenge/paywall pages to reduce wasted retries
 - Added robust PMC fallback to EuropePMC render endpoints when primary PMC PDF URLs return HTML
-- Updated default parallelism to `16` for better speed/success balance on large batches
+- The v0.5.0 release used a default parallelism of `16` for better speed/success balance on large
+  batches
+
+### Current defaults
+
+- Default download parallelism is `4`, which improves reliability with rate-limited open-access
+  providers. Increase it explicitly with `--parallel` when the input set and providers can support
+  higher concurrency.
 
 ## Installation
 
@@ -287,7 +306,7 @@ options:
   -r RETRIES, --retries RETRIES
                         Number of retries for failed downloads (default: 3)
   -p PARALLEL, --parallel PARALLEL
-                        Number of parallel downloads (threads) (default: 16)
+                        Number of parallel downloads (threads) (default: 4)
   --to-md              Convert downloaded PDFs to Markdown
   --md-output MD_OUTPUT
                         Output directory for generated Markdown (default: <pdf_output>/md)
@@ -350,7 +369,7 @@ scihub-cli --to-md --md-output research/markdown papers.txt
 # Enable failure diagnostics (source attempts + HTML snapshots in download-report.json)
 scihub-cli --to-md --md-warn-only --trace-html papers.txt
 
-# Fast-fail is enabled by default (and default parallelism is 16)
+# Fast-fail is enabled by default (and default parallelism is 4)
 scihub-cli -r 1 -t 8 papers.txt
 
 # Academic-only filtering is enabled by default

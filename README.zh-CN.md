@@ -32,6 +32,15 @@
 
 ## 最近更新
 
+### v0.5.4
+
+- 保留跨来源的唯一候选 URL，主候选失败时进行有界回退
+- 对等价的 arXiv、PMC 和 DOI 输入安全去重，并让 arXiv 直链 PDF 直接进入下载路由
+- 增加可安全恢复的进程预留锁，支持陈旧锁和已退出进程的恢复
+- 尊重来源返回的 `Retry-After` 并增加按主机限流；改进 OpenAIRE 解析，并为 OSTI 下载增加有界
+  deadline 宽限
+- 根据开放获取批量基准将默认下载并发调优为 `4`；需要时仍可通过 `--parallel` 显式提高
+
 ### v0.5.3
 
 - 修复 wheel 隔离安装后的真实网络 E2E，并新增 Python 3.10-3.14 CI
@@ -65,7 +74,12 @@
 - 新增 Europe PMC OA 来源（生物医学 OA 覆盖，无需邮箱）
 - 优化 fast-fail：对挑战页/付费墙页更快失败，减少无效重试
 - 增强 PMC 回退：当 PMC PDF 链接返回 HTML 时，自动尝试 EuropePMC 渲染端点
-- 默认并发提升为 `16`，在大批量下载下取得更好的速度/成功率平衡
+- 默认并发曾提升为 `16`，在大批量下载下取得更好的速度/成功率平衡
+
+### 当前默认值
+
+- 默认下载并发为 `4`，在受速率限制的开放获取来源上更稳定。若输入规模和来源允许
+  更高并发，可通过 `--parallel` 显式调高。
 
 ## 安装方法
 
@@ -272,7 +286,7 @@ scihub-cli papers.txt --email your-email@university.edu
  -r RETRIES, --retries RETRIES
                         下载失败时的重试次数（默认: 3）
   -p PARALLEL, --parallel PARALLEL
-                        并行下载线程数（默认: 16）
+                        并行下载线程数（默认: 4）
   --to-md              下载后将 PDF 转为 Markdown
   --md-output MD_OUTPUT
                         Markdown 输出目录（默认: <pdf_output>/md）
@@ -313,7 +327,7 @@ scihub-cli --to-md --md-output research/markdown papers.txt
 # 开启失败诊断（download-report.json 中包含 source attempts 和 HTML 快照）
 scihub-cli --to-md --md-warn-only --trace-html papers.txt
 
-# 默认已启用 fast-fail（默认并发为 16）
+# 默认已启用 fast-fail（默认并发为 4）
 scihub-cli -r 1 -t 8 papers.txt
 
 # 默认已开启学术过滤（只处理学术输入）

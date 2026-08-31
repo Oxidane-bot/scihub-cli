@@ -13,14 +13,17 @@ from urllib.parse import urlparse
 import requests
 from requests.adapters import HTTPAdapter
 
+from ..core.doi_processor import DOIProcessor
 from ..utils.logging import get_logger
 from ..utils.retry import (
     APIRetryConfig,
     PermanentError,
     RetryableError,
+    parse_retry_after,
     retry_with_classification,
 )
 from .base import PaperSource
+from .europe_pmc_common import EuropePMCHostThrottle
 
 logger = get_logger(__name__)
 
@@ -61,7 +64,7 @@ class EuropePMCOASource(PaperSource):
         return "Europe PMC OA"
 
     def can_handle(self, doi: str) -> bool:
-        return doi.startswith("10.")
+        return doi.startswith("10.") or DOIProcessor.extract_pmc_id(doi) is not None
 
     def get_pdf_url(self, doi: str) -> str | None:
         metadata = self._fetch_metadata(doi)
@@ -120,12 +123,18 @@ class EuropePMCOASource(PaperSource):
 
     def _fetch_from_api(self, doi: str) -> dict[str, Any] | None:
         try:
+            pmc_id = DOIProcessor.extract_pmc_id(doi)
             params = {
-                "query": f'DOI:"{doi}" AND OPEN_ACCESS:Y',
+                "query": (
+                    f"PMCID:{pmc_id} AND OPEN_ACCESS:Y"
+                    if pmc_id
+                    else f'DOI:"{doi}" AND OPEN_ACCESS:Y'
+                ),
                 "format": "json",
                 "resultType": "core",
                 "pageSize": 1,
             }
+            EuropePMCHostThrottle.wait_for_slot(self.base_url)
             response = self.session.get(self.base_url, params=params, timeout=self.timeout)
 
             if response.status_code == 200:
@@ -160,7 +169,9 @@ class EuropePMCOASource(PaperSource):
             if response.status_code == 404:
                 raise PermanentError("DOI not found")
             if response.status_code == 429:
-                raise RetryableError("Rate limited")
+                retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                EuropePMCHostThrottle.defer(self.base_url, retry_after)
+                raise RetryableError("Rate limited", retry_after=retry_after)
             if response.status_code in (401, 403):
                 raise PermanentError(f"Access denied ({response.status_code})")
             if response.status_code >= 500:

@@ -10,6 +10,7 @@ from scihub_cli.core.source_manager import SourceManager
 from scihub_cli.models import DownloadProgress, DownloadResult
 from scihub_cli.sources.base import PaperSource
 from scihub_cli.sources.direct_pdf_source import DirectPDFSource
+from scihub_cli.sources.pmc_source import PMCSource
 
 
 def _make_fake_pdf_bytes(size: int = 12000) -> bytes:
@@ -108,6 +109,24 @@ class _PMCFallbackSource(PaperSource):
 
     def get_pdf_url(self, doi: str) -> str | None:  # noqa: ARG002
         return self.primary_url
+
+
+class _PmcRouteDownloader:
+    def __init__(self):
+        self.page_calls: list[str] = []
+
+    def get_page_content(self, url: str):
+        self.page_calls.append(url)
+        return (
+            '<meta name="citation_pdf_url" '
+            'content="https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/pdf/main.pdf">',
+            200,
+        )
+
+    def download_file(self, url: str, output_path: str, progress_callback=None):  # noqa: ARG002
+        assert url == "https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/pdf/main.pdf"
+        Path(output_path).write_bytes(_make_fake_pdf_bytes())
+        return True, None
 
 
 class _StubConverter:
@@ -432,6 +451,28 @@ def test_pmc_download_falls_back_to_europepmc_when_primary_returns_html(tmp_path
     assert result.success
     assert result.download_url in {backend_url, fallback_url}
     assert result.file_path and Path(result.file_path).exists()
+
+
+def test_bare_pmcid_routes_through_pmc_source_and_downloads(tmp_path: Path):
+    downloader = _PmcRouteDownloader()
+    source_manager = SourceManager(
+        sources=[PMCSource(downloader=downloader)],
+        enable_year_routing=False,
+    )
+    client = SciHubClient(
+        output_dir=str(tmp_path / "out"),
+        timeout=5,
+        retries=1,
+        downloader=downloader,  # type: ignore[arg-type]
+        source_manager=source_manager,
+    )
+
+    result = client.download_paper("PMC6505544")
+
+    assert result.success
+    assert result.source == "PMC"
+    assert result.download_url == ("https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/pdf/main.pdf")
+    assert downloader.page_calls == ["https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/"]
 
 
 def test_collect_download_candidates_adds_europepmc_for_named_pmc_pdf(tmp_path: Path):

@@ -22,12 +22,14 @@ from ..config.domains import (
 )
 from ..config.settings import settings
 from ..network.session import BasicSession
+from ..utils.host_throttle import HostThrottle
 from ..utils.logging import get_logger
 from ..utils.retry import (
     DownloadRetryConfig,
     PermanentError,
     RetryableError,
     classify_http_error,
+    parse_retry_after,
     retry_with_classification,
 )
 from .challenge_detection import (
@@ -79,6 +81,11 @@ class FileDownloader:
     _FAST_FAIL_DEADLINE_PROGRESS_MIN_BYTES = 256 * 1024
     _FAST_FAIL_DEADLINE_PROGRESS_GRACE_SECONDS = 6.0
     _FAST_FAIL_DEADLINE_MAX_EXTENSIONS = 1
+    _DEADLINE_MIN_SECONDS_FOR_GRACE = 0.05
+    # A known-large stream can still be making healthy progress when the
+    # caller's wall-clock budget expires.  Allow one bounded extension for
+    # that case (and for OSTI's redirecting technical-report endpoint).
+    _DEADLINE_PROGRESS_MIN_LARGE_FILE_BYTES = 2 * 1024 * 1024
 
     def __init__(
         self,
@@ -765,8 +772,25 @@ class FileDownloader:
             True if the response looks like a PDF, False otherwise.
         """
         response = None
+        self._trace_local.last_probe_response_status = None
         try:
+            HostThrottle.wait_for_slot(
+                url,
+                interval_seconds=HostThrottle.download_interval_for(url),
+            )
             response = self.session.get(url, timeout=self.timeout, stream=True)
+            self._trace_local.last_probe_response_status = response.status_code
+
+            if response.status_code == 429:
+                retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                HostThrottle.defer(
+                    url,
+                    retry_after
+                    if retry_after is not None
+                    else HostThrottle.default_rate_limit_delay_for(url),
+                )
+            elif response.status_code >= 500:
+                HostThrottle.defer(url, HostThrottle.default_server_error_delay_for(url))
 
             if response.status_code == 403:
                 content_type = (response.headers.get("Content-Type", "") or "").lower()
@@ -799,6 +823,12 @@ class FileDownloader:
                 if callable(close):
                     close()
 
+    def get_last_probe_response_status(self) -> int | None:
+        """Return the most recent PDF probe status on this thread."""
+
+        status = getattr(self._trace_local, "last_probe_response_status", None)
+        return int(status) if isinstance(status, int) else None
+
     def _download_once(
         self,
         url: str,
@@ -821,6 +851,10 @@ class FileDownloader:
         response = None
         try:
             self._check_deadline(deadline_ts)
+            HostThrottle.wait_for_slot(
+                url,
+                interval_seconds=HostThrottle.download_interval_for(url),
+            )
             response = self.session.get(
                 url,
                 timeout=self._effective_timeout(deadline_ts),
@@ -868,7 +902,20 @@ class FileDownloader:
                     error=f"HTTP {response.status_code}",
                 )
                 if classify_http_error(response.status_code):
-                    raise RetryableError(f"HTTP {response.status_code}")
+                    retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                    if response.status_code == 429:
+                        HostThrottle.defer(
+                            url,
+                            retry_after
+                            if retry_after is not None
+                            else HostThrottle.default_rate_limit_delay_for(url),
+                        )
+                    elif response.status_code >= 500:
+                        HostThrottle.defer(
+                            url,
+                            HostThrottle.default_server_error_delay_for(url),
+                        )
+                    raise RetryableError(f"HTTP {response.status_code}", retry_after=retry_after)
                 raise PermanentError(f"HTTP {response.status_code}")
 
             # Check content type
@@ -909,6 +956,7 @@ class FileDownloader:
                     url=url,
                     bytes_downloaded=bytes_downloaded,
                     extensions_used=deadline_state["extensions"],
+                    total_bytes=total_bytes,
                 ):
                     deadline_state["ts"] = now + self._FAST_FAIL_DEADLINE_PROGRESS_GRACE_SECONDS
                     deadline_state["extensions"] += 1
@@ -1237,6 +1285,9 @@ class FileDownloader:
             if timeout_seconds is not None:
                 request_timeout = max(1.0, float(timeout_seconds))
             response = self.session.get(url, timeout=request_timeout)
+            self._trace_local.last_page_response_headers = dict(
+                getattr(response, "headers", {}) or {}
+            )
             self._emit_html_snapshot(
                 url=url,
                 status_code=response.status_code,
@@ -1294,6 +1345,12 @@ class FileDownloader:
             )
             return None, None
 
+    def get_last_page_response_headers(self) -> dict[str, str]:
+        """Return headers from the most recent page request on this thread."""
+
+        headers = getattr(self._trace_local, "last_page_response_headers", {})
+        return dict(headers) if isinstance(headers, dict) else {}
+
     def _new_download_deadline(self) -> float | None:
         if self.download_deadline_seconds is None:
             return None
@@ -1321,13 +1378,16 @@ class FileDownloader:
         url: str,
         bytes_downloaded: int,
         extensions_used: int,
+        total_bytes: int | None = None,
     ) -> bool:
-        if not self.fast_fail:
+        if self.download_deadline_seconds is None:
             return False
-        if (
-            self.download_deadline_seconds is None
-            or self.download_deadline_seconds < self._FAST_FAIL_DEADLINE_MIN_SECONDS_FOR_GRACE
-        ):
+        minimum_deadline = (
+            self._FAST_FAIL_DEADLINE_MIN_SECONDS_FOR_GRACE
+            if self.fast_fail
+            else self._DEADLINE_MIN_SECONDS_FOR_GRACE
+        )
+        if self.download_deadline_seconds < minimum_deadline:
             return False
         if extensions_used >= self._FAST_FAIL_DEADLINE_MAX_EXTENSIONS:
             return False
@@ -1342,6 +1402,21 @@ class FileDownloader:
             return False
         path = (parsed.path or "").lower()
         query = (parsed.query or "").lower()
+        is_osti_endpoint = host == "osti.gov" or host.endswith(".osti.gov")
+        is_osti_endpoint = is_osti_endpoint and path.startswith("/servlets/purl/")
+        is_known_large_file = (
+            total_bytes is not None and total_bytes >= self._DEADLINE_PROGRESS_MIN_LARGE_FILE_BYTES
+        ) or bytes_downloaded >= self._DEADLINE_PROGRESS_MIN_LARGE_FILE_BYTES
+
+        # Fast-fail keeps its existing conservative PDF-path gate.  Normal
+        # mode additionally grants the same one-shot grace when the response
+        # is demonstrably large, and OSTI gets an explicit exception because
+        # its /servlets/purl endpoint commonly redirects while streaming a
+        # technical-report PDF without a `.pdf` path.
+        if not self.fast_fail and not (is_known_large_file or is_osti_endpoint):
+            return False
+        if is_osti_endpoint or is_known_large_file:
+            return True
         return looks_like_pdf_download_path(path=path, query=query)
 
     @classmethod

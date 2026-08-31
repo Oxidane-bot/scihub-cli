@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from unittest.mock import patch
 
+from scihub_cli.sources.europe_pmc_common import EuropePMCHostThrottle
 from scihub_cli.sources.pmc_source import PMCSource
 
 
@@ -66,3 +68,61 @@ def test_pmc_fallback_uses_probe():
 
     assert source.get_pdf_url(url) == second
     assert downloader.probed[:2] == [first, second]
+
+
+def test_pmc_page_retry_honors_retry_after_without_rotating_hosts():
+    class _RateLimitedDownloader:
+        def __init__(self):
+            self.calls = 0
+            self.headers = [{"Retry-After": "4"}, {}]
+
+        def get_page_content(self, url: str):  # noqa: ARG002
+            self.calls += 1
+            if self.calls == 1:
+                return "Rate limited", 429
+            return (
+                '<meta name="citation_pdf_url" content="https://pmc.example/paper.pdf">',
+                200,
+            )
+
+        def get_last_page_response_headers(self):
+            return self.headers[min(self.calls - 1, len(self.headers) - 1)]
+
+        def probe_pdf_url(self, url: str):  # noqa: ARG002
+            raise AssertionError("A successful page should not probe alternate hosts")
+
+    downloader = _RateLimitedDownloader()
+    source = PMCSource(downloader=downloader)  # type: ignore[arg-type]
+    EuropePMCHostThrottle.reset_for_tests()
+
+    with patch("scihub_cli.sources.pmc_source.time.sleep") as sleep:
+        url = source.get_pdf_url("https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/")
+
+    assert url == "https://pmc.example/paper.pdf"
+    assert downloader.calls == 2
+    assert any(call.args[0] >= 3.9 for call in sleep.call_args_list)
+    EuropePMCHostThrottle.reset_for_tests()
+
+
+def test_pmc_does_not_sleep_on_an_over_budget_retry_after():
+    class _HugeRateLimitedDownloader:
+        def __init__(self):
+            self.calls = 0
+
+        def get_page_content(self, url: str):  # noqa: ARG002
+            self.calls += 1
+            return "Rate limited", 429
+
+        def get_last_page_response_headers(self):
+            return {"Retry-After": "1e300"}
+
+    downloader = _HugeRateLimitedDownloader()
+    source = PMCSource(downloader=downloader)  # type: ignore[arg-type]
+    EuropePMCHostThrottle.reset_for_tests()
+
+    with patch("scihub_cli.sources.pmc_source.time.sleep") as sleep:
+        assert source.get_pdf_url("https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/") is None
+
+    assert downloader.calls == 1
+    sleep.assert_not_called()
+    EuropePMCHostThrottle.reset_for_tests()

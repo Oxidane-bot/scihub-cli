@@ -69,3 +69,41 @@ def test_normalize_non_doi_url_strips_fragment_tail_noise():
 def test_normalize_crossref_api_works_url_to_doi():
     raw = "https://api.crossref.org/works/10.1007%2Fs10584-018-2272-5"
     assert DOIProcessor.normalize_doi(raw) == "10.1007/s10584-018-2272-5"
+
+
+def test_extract_pmc_id_accepts_only_bare_or_trusted_article_urls():
+    accepted = {
+        "PMC6505544": "PMC6505544",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC6505544/": "PMC6505544",
+        "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6505544/pdf/main.pdf": "PMC6505544",
+        "https://europepmc.org/articles/PMC6505544?pdf=render": "PMC6505544",
+        "https://europepmc.org/backend/ptpmcrender.fcgi?accid=PMC6505544&blobtype=pdf": "PMC6505544",
+    }
+
+    for identifier, expected in accepted.items():
+        assert DOIProcessor.extract_pmc_id(identifier) == expected
+
+
+def test_extract_pmc_id_rejects_untrusted_query_path_and_doi_tokens():
+    rejected = [
+        "paper PMC6505544",
+        "https://downloads.example.test/paper.pdf?pmcid=PMC6505544",
+        "https://downloads.example.test/articles/PMC6505544/paper.pdf",
+        "https://doi.org/10.1234/PMC6505544",
+        "https://publisher.example/doi/10.1234/PMC6505544",
+        "https://pmc.ncbi.nlm.nih.gov/search?query=PMC6505544",
+        "https://europepmc.org/search?query=PMC6505544",
+    ]
+
+    assert all(DOIProcessor.extract_pmc_id(identifier) is None for identifier in rejected)
+
+
+def test_normalize_identifier_prefers_doi_over_pmc_token_in_url():
+    variants = [
+        "https://doi.org/10.1234/PMC6505544",
+        "https://publisher.example/doi/10.1234/PMC6505544",
+    ]
+
+    assert {DOIProcessor.normalize_identifier(value) for value in variants} == {
+        "10.1234/pmc6505544"
+    }

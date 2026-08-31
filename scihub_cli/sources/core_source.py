@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import requests
 
 from ..utils.logging import get_logger
-from ..utils.retry import RetryConfig
+from ..utils.retry import DEFAULT_MAX_RETRY_AFTER_SECONDS, RetryConfig, parse_retry_after
 from .base import PaperSource
 
 logger = get_logger(__name__)
@@ -156,7 +156,17 @@ class CORESource(PaperSource):
 
                 elif response.status_code == 429:
                     # Rate limit exceeded
-                    retry_after = int(response.headers.get("Retry-After", 10))
+                    retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                    if retry_after is None:
+                        retry_after = 10.0
+                    if retry_after > DEFAULT_MAX_RETRY_AFTER_SECONDS:
+                        logger.warning(
+                            "[CORE] Retry-After %.1fs exceeds the %.1fs retry budget; "
+                            "stopping retries",
+                            retry_after,
+                            DEFAULT_MAX_RETRY_AFTER_SECONDS,
+                        )
+                        return None
                     logger.warning(f"[CORE] Rate limit exceeded, waiting {retry_after}s")
                     self._push_next_request_window(retry_after)
                     if attempt < self.retry_config.max_attempts - 1:

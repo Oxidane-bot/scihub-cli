@@ -8,13 +8,17 @@ This source supports common PMC URL variants and returns a direct PDF URL.
 from __future__ import annotations
 
 import re
+import time
 from urllib.parse import urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
+from ..core.doi_processor import DOIProcessor
 from ..core.downloader import FileDownloader
 from ..utils.logging import get_logger
+from ..utils.retry import DEFAULT_MAX_RETRY_AFTER_SECONDS, parse_retry_after
 from .base import PaperSource
+from .europe_pmc_common import EuropePMCHostThrottle
 
 logger = get_logger(__name__)
 
@@ -22,7 +26,8 @@ logger = get_logger(__name__)
 class PMCSource(PaperSource):
     """Download source for PubMed Central (PMC) articles."""
 
-    _PMC_ID_RE = re.compile(r"(PMC\d+)", re.IGNORECASE)
+    _PAGE_RETRY_ATTEMPTS = 2
+    _PAGE_RETRY_BACKOFF_SECONDS = 1.0
 
     def __init__(self, downloader: FileDownloader):
         self.downloader = downloader
@@ -47,7 +52,7 @@ class PMCSource(PaperSource):
             return cleaned
 
         article_url = self._normalize_article_url(cleaned, pmc_id)
-        html, status = self.downloader.get_page_content(article_url)
+        html, status = self._get_article_page(article_url)
         if html and status == 200:
             pdf_url = self._extract_pdf_url_from_html(html, article_url, pmc_id)
             metadata = self._extract_metadata_from_html(html)
@@ -57,16 +62,63 @@ class PMCSource(PaperSource):
                 logger.info(f"[PMC] Found PDF for {pmc_id}")
                 return pdf_url
 
+        if status == 429:
+            # Do not turn a rate-limit response into host rotation.  The
+            # bounded retry above already honored Retry-After; callers can
+            # continue through their normal source chain later.
+            logger.info("[PMC] Rate limit persisted for %s; skipping fallback probes", pmc_id)
+            return None
+
         # Fallback to predictable endpoints when HTML extraction fails.
         probe = getattr(self.downloader, "probe_pdf_url", None)
         for candidate in self._fallback_pdf_urls(pmc_id):
             logger.debug(f"[PMC] Falling back to constructed PDF URL for {pmc_id}: {candidate}")
             if callable(probe) and not probe(candidate):
+                status_getter = getattr(self.downloader, "get_last_probe_response_status", None)
+                probe_status = status_getter() if callable(status_getter) else None
+                if probe_status == 429:
+                    logger.info(
+                        "[PMC] Rate limit persisted for %s; stopping fallback probes", pmc_id
+                    )
+                    return None
                 logger.debug(f"[PMC] Fallback URL did not validate as PDF: {candidate}")
                 continue
             return candidate
 
         return None
+
+    def _get_article_page(self, article_url: str) -> tuple[str | None, int | None]:
+        """Fetch a PMC page with Retry-After-aware, host-throttled retries."""
+
+        for attempt in range(self._PAGE_RETRY_ATTEMPTS):
+            EuropePMCHostThrottle.wait_for_slot(article_url)
+            html, status = self.downloader.get_page_content(article_url)
+            if status != 429:
+                return html, status
+
+            headers_getter = getattr(self.downloader, "get_last_page_response_headers", None)
+            headers = headers_getter() if callable(headers_getter) else {}
+            retry_after = parse_retry_after((headers or {}).get("Retry-After"))
+            delay = retry_after if retry_after is not None else self._PAGE_RETRY_BACKOFF_SECONDS
+            if delay > DEFAULT_MAX_RETRY_AFTER_SECONDS:
+                # Capping this delay would retry before the provider's
+                # explicit lower bound.  Stop the bounded page retry instead
+                # of blocking the whole CLI on an unreasonable hint.
+                logger.warning(
+                    "[PMC] Retry-After %.1fs exceeds the %.1fs retry budget; stopping page retries",
+                    delay,
+                    DEFAULT_MAX_RETRY_AFTER_SECONDS,
+                )
+                return html, status
+            # A 429 is a provider instruction, not a signal to rotate through
+            # alternate hosts.  Hold this host and retry the same page only.
+            EuropePMCHostThrottle.defer(article_url, delay)
+            if attempt >= self._PAGE_RETRY_ATTEMPTS - 1:
+                return html, status
+            logger.info("[PMC] Rate limited; retrying page after %.1fs", delay)
+            time.sleep(delay)
+
+        return None, None
 
     def get_metadata(self, identifier: str) -> dict[str, str] | None:
         pmc_id = self._extract_pmc_id(identifier)
@@ -76,10 +128,10 @@ class PMCSource(PaperSource):
 
     @classmethod
     def _extract_pmc_id(cls, identifier: str) -> str | None:
-        match = cls._PMC_ID_RE.search(identifier or "")
-        if not match:
-            return None
-        return match.group(1).upper()
+        # Keep source routing aligned with the identity classifier.  A loose
+        # regex here would make a DOI suffix or arbitrary URL query look like
+        # a PMC article even though DOIProcessor correctly rejected it.
+        return DOIProcessor.extract_pmc_id(identifier)
 
     @staticmethod
     def _strip_fragment(url: str) -> str:

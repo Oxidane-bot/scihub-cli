@@ -27,7 +27,7 @@ Always use `uv` to run the project.
 Example round command template:
 
 ```bash
-uv run python -m scihub_cli <input_file> -o <round_output_dir> --trace-html -p 16 -t 15
+uv run python -m scihub_cli <input_file> -o <round_output_dir> --trace-html -p 4 -t 15
 ```
 
 ## Round Workflow
