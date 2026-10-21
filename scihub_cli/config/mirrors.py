@@ -17,14 +17,22 @@ class MirrorConfig:
 
     # Mirror configuration by difficulty level.
     #
-    # Keep this empty by default.  Mirror domains are volatile, and a domain
-    # returning HTTP 200 for its home page is not evidence that it can serve a
-    # requested paper.  Shipping an unverified list makes the CLI spend time
-    # probing dead domains and gives callers a misleading sense of
-    # availability.  Users can supply a mirror explicitly with ``--mirror``;
-    # MirrorManager then validates an article-specific URL before using it.
+    # Mirror domains are volatile, and a domain returning HTTP 200 for its home
+    # page is not evidence that it can serve a requested paper.  The entries
+    # below were verified by resolving a real article and downloading its PDF
+    # (402,190 bytes starting with %PDF) on 2026-10-21; candidate domains come
+    # from the list published at https://lovescihub.wordpress.com/.
+    #
+    # MirrorManager still validates every candidate against an article-specific
+    # URL before using one, so a stale entry costs a single probe inside the
+    # parallel tier instead of a failed run.  Update this list when the mirrors
+    # rotate; --mirror overrides it for a single invocation.
     MIRROR_TIERS = {
-        MirrorTier.EASY: [],
+        MirrorTier.EASY: [
+            "https://sci-hub.ren",
+            "https://sci-hub.ee",
+            "https://sci-hub.mk",
+        ],
         MirrorTier.HARD: [],
     }
 

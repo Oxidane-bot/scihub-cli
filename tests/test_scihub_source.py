@@ -99,7 +99,9 @@ def test_scihub_source_fast_fail_limits_mirror_attempts_and_skips_fallback():
     ]
 
 
-def test_scihub_source_fast_fail_skips_status_fallback_to_raw_doi():
+def test_scihub_source_fast_fail_skips_status_fallback_to_raw_doi(monkeypatch):
+    monkeypatch.setenv("SCIHUB_DOI_URL_STYLE", "at")
+    # The "@" URL style is what exercises the raw-DOI status fallback below.
     mirrors = ["https://m1.test"]
     doi = "10.1234/abcd"
     formatted = DOIProcessor.format_doi_for_url(doi)
@@ -151,7 +153,9 @@ def test_scihub_source_fast_fail_uses_page_timeout_override():
     assert 1.0 <= timeout <= source._FAST_FAIL_PAGE_TIMEOUT_SECONDS
 
 
-def test_scihub_source_fast_fail_rescue_doi_allows_status_fallback_and_bypass():
+def test_scihub_source_fast_fail_rescue_doi_allows_status_fallback_and_bypass(monkeypatch):
+    monkeypatch.setenv("SCIHUB_DOI_URL_STYLE", "at")
+    # The "@" URL style is what exercises the raw-DOI status fallback below.
     mirrors = ["https://m1.test"]
     doi = "10.1016/j.applthermaleng.2021.116919"
     formatted = DOIProcessor.format_doi_for_url(doi)
@@ -219,7 +223,9 @@ def test_scihub_source_fast_fail_rescue_doi_can_use_third_mirror():
     ]
 
 
-def test_scihub_source_fast_fail_rescue_doi_can_fallback_after_no_result_200():
+def test_scihub_source_fast_fail_rescue_doi_can_fallback_after_no_result_200(monkeypatch):
+    monkeypatch.setenv("SCIHUB_DOI_URL_STYLE", "at")
+    # The "@" URL style is what exercises the raw-DOI status fallback below.
     mirrors = ["https://m1.test"]
     doi = "10.1080/09593969.2015.1017773"
     formatted = DOIProcessor.format_doi_for_url(doi)

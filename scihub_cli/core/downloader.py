@@ -2,6 +2,7 @@
 Core downloader implementation with single responsibility.
 """
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -128,6 +129,16 @@ class FileDownloader:
             self.retry_config.base_delay = min(self.retry_config.base_delay, 0.5)
             self.retry_config.max_delay = min(self.retry_config.max_delay, 2.0)
 
+        if download_deadline_seconds is None:
+            env_deadline = os.getenv("SCIHUB_DOWNLOAD_DEADLINE_SECONDS", "").strip()
+            if env_deadline:
+                try:
+                    download_deadline_seconds = float(env_deadline)
+                except ValueError:
+                    logger.warning(
+                        "Ignoring SCIHUB_DOWNLOAD_DEADLINE_SECONDS=%r: not a number",
+                        env_deadline,
+                    )
         if download_deadline_seconds is None:
             if self.fast_fail:
                 download_deadline_seconds = max(10.0, float(self.timeout) * 1.5)

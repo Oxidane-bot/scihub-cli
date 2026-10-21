@@ -155,13 +155,19 @@ def normalize_recovery_url(url: str) -> str | None:
     return urlunparse(parsed._replace(path=cleaned_path, fragment=""))
 
 
+# Hosts that serve Sci-Hub mirror pages or the PDFs those mirrors hand out.
+# sci.bban.top is the document host used by the sci-hub.ren / .ee / .mk mirrors,
+# so Sci-Hub-specific bypass and fast-fail handling has to cover it too.
+SCIHUB_FAMILY_HOST_MARKERS = ("sci-hub", "sci.bban.top")
+
+
 def is_scihub_host(url: str) -> bool:
     try:
         parsed = urlparse((url or "").strip())
     except ValueError:
         return False
     host = parsed.netloc.lower()
-    return "sci-hub" in host
+    return any(marker in host for marker in SCIHUB_FAMILY_HOST_MARKERS)
 
 
 def derive_alternate_pdf_urls(url: str) -> list[str]:

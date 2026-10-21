@@ -55,7 +55,7 @@ def test_mirror_health_check_does_not_accept_home_page_200(monkeypatch):
     monkeypatch.setattr("scihub_cli.core.mirror_manager.requests.get", fake_get)
 
     assert manager._test_mirror(mirror) is False
-    assert calls == ["https://mirror.example/10.1038@323533a0"]
+    assert calls == ["https://mirror.example/10.1038/323533a0"]
 
 
 def test_mirror_health_check_requires_article_pdf_link(monkeypatch):
@@ -73,7 +73,7 @@ def test_mirror_health_check_requires_article_pdf_link(monkeypatch):
     monkeypatch.setattr("scihub_cli.core.mirror_manager.requests.get", fake_get)
 
     assert manager._test_mirror(mirror) is True
-    assert calls == ["https://mirror.example/10.1038@323533a0"]
+    assert calls == ["https://mirror.example/10.1038/323533a0"]
 
 
 def test_mirror_health_check_rejects_block_page(monkeypatch):
