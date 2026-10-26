@@ -8,6 +8,7 @@ This is the backward-compatible interface that uses the new modular architecture
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +76,23 @@ def _write_failure_report(results: list[DownloadResult], output_dir: str) -> str
     return str(report_path)
 
 
+def _parse_mirror_argument(value: str | None) -> list[str] | None:
+    """Split a --mirror argument into an ordered, de-duplicated mirror list.
+
+    A single value behaves exactly as before.  A comma-separated value keeps a
+    fallback chain: MirrorManager probes the tier in parallel and rotates to the
+    next mirror when one is blocked or stops exposing a PDF link.
+    """
+    if not value:
+        return None
+    mirrors: list[str] = []
+    for candidate in re.split(r"[,\s]+", value.strip()):
+        candidate = candidate.strip().rstrip("/")
+        if candidate and candidate not in mirrors:
+            mirrors.append(candidate)
+    return mirrors or None
+
+
 def main():
     """Main entry point for the script."""
     if len(sys.argv) > 1 and sys.argv[1] == "skill":
@@ -98,7 +116,15 @@ def main():
         default=settings.output_dir,
         help=f"Output directory for downloaded PDFs (default: {settings.output_dir})",
     )
-    parser.add_argument("-m", "--mirror", help="Specific Sci-Hub mirror to use")
+    parser.add_argument(
+        "-m",
+        "--mirror",
+        "--scihub-mirror",
+        help=(
+            "Specific Sci-Hub mirror(s) to use, e.g. https://sci-hub.ren. "
+            "Separate several mirrors with commas to keep a fallback chain."
+        ),
+    )
     parser.add_argument(
         "-t",
         "--timeout",
@@ -222,7 +248,7 @@ def main():
         logger.info("No email configured; Unpaywall will be disabled for this run")
 
     # Initialize client with parameters
-    mirrors = [args.mirror] if args.mirror else None
+    mirrors = _parse_mirror_argument(args.mirror)
     md_output_dir = args.md_output
     if args.to_md and not md_output_dir:
         import os
@@ -291,7 +317,7 @@ class SciHubDownloader:
 
     def __init__(self, output_dir=None, mirror=None, timeout=None, retries=None):
         """Initialize with legacy interface."""
-        mirrors = [mirror] if mirror else None
+        mirrors = _parse_mirror_argument(mirror)
         self.client = SciHubClient(
             output_dir=output_dir, mirrors=mirrors, timeout=timeout, retries=retries
         )

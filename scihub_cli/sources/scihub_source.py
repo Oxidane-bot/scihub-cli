@@ -197,6 +197,12 @@ class SciHubSource(PaperSource):
         """Attempt to extract a PDF URL from a specific Sci-Hub mirror."""
         formatted_doi = self.doi_processor.format_doi_for_url(doi) if doi.startswith("10.") else doi
         scihub_url = f"{mirror}/{formatted_doi}"
+        fallback_url = f"{mirror}/{doi}"
+        can_fallback = (
+            doi.startswith("10.")
+            and fallback_url != scihub_url
+            and (not fast_fail or allow_fast_fail_status_fallback)
+        )
         logger.debug(f"[Sci-Hub] Accessing: {scihub_url}")
 
         html_content, status_code = self.downloader.get_page_content(
@@ -205,8 +211,8 @@ class SciHubSource(PaperSource):
             force_challenge_bypass=allow_challenge_bypass,
         )
         if not html_content or status_code != 200:
-            if doi.startswith("10.") and (not fast_fail or allow_fast_fail_status_fallback):
-                fallback_url = f"{mirror}/{doi}"
+            if can_fallback:
+                can_fallback = False
                 logger.debug(f"[Sci-Hub] Trying fallback: {fallback_url}")
                 html_content, status_code = self.downloader.get_page_content(
                     fallback_url,
@@ -221,12 +227,7 @@ class SciHubSource(PaperSource):
             return None, True, True
 
         download_url = self.parser.extract_download_url(html_content, mirror)
-        if (
-            not download_url
-            and doi.startswith("10.")
-            and (not fast_fail or allow_fast_fail_status_fallback)
-        ):
-            fallback_url = f"{mirror}/{doi}"
+        if not download_url and can_fallback:
             logger.debug(f"[Sci-Hub] Extraction failed, trying fallback: {fallback_url}")
             html_content, status_code = self.downloader.get_page_content(
                 fallback_url,

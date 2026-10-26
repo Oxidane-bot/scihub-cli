@@ -3,6 +3,7 @@ DOI and URL normalization utilities.
 """
 
 import html
+import os
 import re
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 
@@ -321,12 +322,18 @@ class DOIProcessor:
 
     @classmethod
     def format_doi_for_url(cls, doi: str) -> str:
-        """Format DOI for use in Sci-Hub URL."""
-        # Replace / with @ for Sci-Hub URL format
-        formatted = doi.replace("/", "@")
-        # Handle parentheses and other special characters
-        formatted = quote(formatted, safe="@")
-        return formatted
+        """Format a DOI for use in a Sci-Hub article URL.
+
+        Sci-Hub exposes a DOI as /<doi>, e.g. 10.1038/nature09492.  The legacy
+        "@" form, 10.1038@nature09492, is no longer understood by the mirrors
+        that still answer: sci-hub.ren replies HTTP 504 with an empty body and
+        sci-hub.ee replies 200 but exposes no PDF link, so a lookup built from
+        it can never succeed.  Keep the slash by default; setting
+        SCIHUB_DOI_URL_STYLE=at restores the old behaviour.
+        """
+        if os.getenv("SCIHUB_DOI_URL_STYLE", "").strip().lower() == "at":
+            return quote(doi.replace("/", "@"), safe="@")
+        return quote(doi, safe="/")
 
     @classmethod
     def _strip_trailing_noise(cls, value: str) -> str:

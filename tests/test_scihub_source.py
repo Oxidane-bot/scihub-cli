@@ -1,3 +1,5 @@
+import pytest
+
 from scihub_cli.core.doi_processor import DOIProcessor
 from scihub_cli.core.parser import ContentParser
 from scihub_cli.sources.scihub_source import SciHubSource
@@ -99,7 +101,9 @@ def test_scihub_source_fast_fail_limits_mirror_attempts_and_skips_fallback():
     ]
 
 
-def test_scihub_source_fast_fail_skips_status_fallback_to_raw_doi():
+def test_scihub_source_fast_fail_skips_status_fallback_to_raw_doi(monkeypatch):
+    monkeypatch.setenv("SCIHUB_DOI_URL_STYLE", "at")
+    # The "@" URL style is what exercises the raw-DOI status fallback below.
     mirrors = ["https://m1.test"]
     doi = "10.1234/abcd"
     formatted = DOIProcessor.format_doi_for_url(doi)
@@ -151,7 +155,9 @@ def test_scihub_source_fast_fail_uses_page_timeout_override():
     assert 1.0 <= timeout <= source._FAST_FAIL_PAGE_TIMEOUT_SECONDS
 
 
-def test_scihub_source_fast_fail_rescue_doi_allows_status_fallback_and_bypass():
+def test_scihub_source_fast_fail_rescue_doi_allows_status_fallback_and_bypass(monkeypatch):
+    monkeypatch.setenv("SCIHUB_DOI_URL_STYLE", "at")
+    # The "@" URL style is what exercises the raw-DOI status fallback below.
     mirrors = ["https://m1.test"]
     doi = "10.1016/j.applthermaleng.2021.116919"
     formatted = DOIProcessor.format_doi_for_url(doi)
@@ -212,14 +218,14 @@ def test_scihub_source_fast_fail_rescue_doi_can_use_third_mirror():
     assert url == "https://m3.test/downloads/10.1080/09593969.2015.1017773.pdf?download=true"
     assert downloader.calls == [
         f"{mirrors[0]}/{formatted}",
-        f"{mirrors[0]}/{doi}",
         f"{mirrors[1]}/{formatted}",
-        f"{mirrors[1]}/{doi}",
         f"{mirrors[2]}/{formatted}",
     ]
 
 
-def test_scihub_source_fast_fail_rescue_doi_can_fallback_after_no_result_200():
+def test_scihub_source_fast_fail_rescue_doi_can_fallback_after_no_result_200(monkeypatch):
+    monkeypatch.setenv("SCIHUB_DOI_URL_STYLE", "at")
+    # The "@" URL style is what exercises the raw-DOI status fallback below.
     mirrors = ["https://m1.test"]
     doi = "10.1080/09593969.2015.1017773"
     formatted = DOIProcessor.format_doi_for_url(doi)
@@ -247,7 +253,8 @@ def test_scihub_source_fast_fail_rescue_doi_can_fallback_after_no_result_200():
     assert downloader.calls == [f"{mirrors[0]}/{formatted}", f"{mirrors[0]}/{doi}"]
 
 
-def test_scihub_source_fast_fail_rescue_reorders_tail_mirrors_by_hint():
+def test_scihub_source_fast_fail_rescue_reorders_tail_mirrors_by_hint(monkeypatch):
+    monkeypatch.setenv("SCIHUB_DOI_URL_STYLE", "at")
     mirrors = [
         "https://sci-hub.ren",
         "https://sci-hub.vg",
@@ -287,3 +294,22 @@ def test_scihub_source_fast_fail_rescue_reorders_tail_mirrors_by_hint():
         f"{mirrors[1]}/{doi}",
         f"{mirrors[2]}/{formatted}",
     ]
+
+
+@pytest.mark.parametrize("fast_fail", [False, True])
+@pytest.mark.parametrize("response", [(None, 504), ("<html>no pdf here</html>", 200)])
+def test_slash_doi_failure_requests_each_mirror_once(monkeypatch, fast_fail, response):
+    monkeypatch.delenv("SCIHUB_DOI_URL_STYLE", raising=False)
+    mirrors = ["https://m1.test", "https://m2.test"]
+    doi = "10.1016/j.applthermaleng.2021.116919"
+    success_html = '<iframe id="pdf" src="/downloads/paper.pdf"></iframe>'
+    downloader = _StubDownloader(
+        {f"{mirrors[0]}/{doi}": response, f"{mirrors[1]}/{doi}": (success_html, 200)},
+        fast_fail=fast_fail,
+    )
+    source = SciHubSource(
+        _StubMirrorManager(mirrors), ContentParser(), DOIProcessor(), downloader
+    )
+
+    assert source.get_pdf_url(doi) == "https://m2.test/downloads/paper.pdf?download=true"
+    assert downloader.calls == [f"{mirror}/{doi}" for mirror in mirrors]
